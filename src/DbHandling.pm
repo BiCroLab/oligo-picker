@@ -143,7 +143,7 @@ sub loadData2Db{
             $a_chr cmp $b_chr || $a_start <=> $b_start;
           } @list;
   
-  $dbh->begin_work;
+  #$dbh->begin_work;
   my $insert_count   = 0;
   $dbh->{AutoCommit} = 0;
   $dbh->do("PRAGMA synchronous=OFF");
@@ -170,7 +170,8 @@ sub loadData2Db{
     }
   }
  
-  $dbh->commit; 
+  $dbh->commit;
+  $dbh->{AutoCommit} = 1;
   $dbh->disconnect();
 }
 

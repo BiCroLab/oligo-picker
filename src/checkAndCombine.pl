@@ -10,11 +10,11 @@ require("$script/FileHandling.pm");
 require("$script/DbHandling.pm");
 Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-my $vmsh = $tmp_dir."/vmatch_sh_".$pid;
+my $vmsh = $tmp_dir."/vmRun/vmatch_sh_".$pid;
 INFO "\tDelete the vmatch sh, input and output directories for the pid $pid: $vmin, $vmout, $vmsh!\n";
-capturex("rm",("-r",$vmin));
-capturex("rm",("-r",$vmout));
-capturex("rm",("-r",$vmsh));
+#capturex("rm",("-r",$vmin));
+#capturex("rm",("-r",$vmout));
+#capturex("rm",("-r",$vmsh));
 
 my @arg      = split(/::/,$arguments);
 my $dist     = $arg[9];

@@ -12,10 +12,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 
 
-## October 2015, v0.1
+## [0.2] April 2016
+### Changed
+- Major improvements.
+
+
+
+## [0.1] October 2015
 First release.
 
 
 
 [Unreleased] https://github.com/ggirelli/oligo-picker  
 [0.1] https://github.com/ggirelli/oligo-picker/releases/tag/v0.1
+[0.2] https://github.com/ggirelli/oligo-picker/releases/tag/v0.2

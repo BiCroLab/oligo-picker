@@ -3,23 +3,26 @@ use strict;
 use Getopt::Long qw(:config no_ignore_case);
 use Log::Log4perl qw(:easy);
 use IPC::System::Simple qw(capturex);
+use Math::Round qw(round);
 
 # SET DEFAULT VARIABLES
-my $mail     = "gabriele.girelli\@scilifelab.se";
-my $driver   = "SQLite";
-my $proj     = "b2015233";
-my $work_dir = "/proj/b2015233/nobackup/uniqueOligoPipeline";
-my $script   = "/proj/b2015233/bils/kmer_pipeline_v0.1_oct2015";
-my $ref      = "/sw/data/uppnex/reference/Homo_sapiens/hg19/chromosomes";
-my $db_name  = $work_dir."/unique_oligonucleotides.db";
-my $formamid = 50;
-my $salt     = 0.42;
-my $gc_min   = 35;
-my $gc_max   = 80;
-my $tmDelta  = 10;
-my $dist     = 10;
-my $sstmp    = 65;
-my $hpol     = "na";
+my $mail        = "gabriele.girelli\@scilifelab.se";
+my $driver      = "SQLite";
+my $proj        = "b2015233";
+my $work_dir    = "/proj/b2015233/nobackup/uniqueOligoPipeline_v0.2";
+my $script      = "/proj/b2015233/bils/kmer_pipeline_v0.2_apr2016";
+my $wgs         = "/sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/WholeGenomeFasta/genome.fa";
+my $ref         = "/sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/Chromosomes";
+my $db_name     = $work_dir."/unique_oligonucleotides_2016.db";
+my $formamid    = 50;
+my $salt        = 0.42;
+my $gc_min      = 35;
+my $gc_max      = 80;
+my $tmDelta     = 10;
+my $dist        = 10;
+my $sstmp       = 65;
+my $hpol        = "na";
+my $max_over_p  = 60;                                       # maximal overlap between two oligomers in percentage
 
 require("$script/DbHandling.pm");
 require("$script/FileHandling.pm");
@@ -45,6 +48,7 @@ Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 LOGDIE "\tIncorrect number of arguments! Use option -h or --help for usage!\n" if(@ARGV == 0);     # no parameters found
 GetOptions( 'p|project=s'     => \$proj,
             'r|reference=s'   => \$ref,
+            'W|wgs=s'         => \$wgs,
             'd|db_name=s'     => \$db_name,
             'f|formamid=f'    => \$formamid, 
             'g|gc_min=f'      => \$gc_min,
@@ -54,6 +58,7 @@ GetOptions( 'p|project=s'     => \$proj,
             'S|ss_temp=f'     => \$sstmp,
             'D|distance=i'    => \$dist,
             'w|workdir=s'     => \$work_dir,
+            'v|maxoverlap=i'  => \$max_over_p,
             'a|all=s'         => \ my $db_flag,
             'k|kmer=i'        => \ my $kmer,
             'c|chromosom=s'   => \ my $chr,
@@ -85,6 +90,9 @@ sub main{
   my $option = $_[0];
   my $str    = "";
   
+  # calculate the maximal overlap between 2 oligos in base pairs
+  my $max_over = round(($kmer * $max_over_p) / 100);
+  
   if($option == 2){# option = 2: DB enquiry for a specific region.
     LOGDIE "\tThe file $db_name does not exists\n" if(!(-e $db_name));                                                                    # check if database exists
     capturex("mkdir",($out_dir)) if(!(-d $out_dir));                                                                                      # create output directory
@@ -104,16 +112,18 @@ sub main{
     my ($sh_j,$ref_count,$x) = FileHandling::createSubmissionScript_jellyfish($ref,$proj,$kmer,$tmp_dir,$log,$mail);
     my %j_out                = %{$x};
     my $id_j                 = FileHandling::submit_job($sh_j,0,0,$log);                                                                  # slurm script, 0:not chained/1:chained, job id: 0 = no chaining, >0 if chained
-    
-    # JELLYFISH PARSER, VMATCH INDEX TREE
+
+    # VMATCH INDEX TREE
+    my ($sh_vmidx,$idx)      = FileHandling::createSubmissionScript_vmatchIdx($wgs,$tmp_dir,$log,$proj,$mail);                            # run Vmatch index for the entire genome
+    my $id_vIdx              = FileHandling::submit_job($sh_vmidx,0,0,$log);
+    my $chain_id             = $id_j.":".$id_vIdx;                                                                                        # start the parser only after Vmatch index and jellyfish have finished
+
+    # JELLYFISH PARSER
     my $pid = 0;
     foreach my $in (keys %j_out){
-      my $plog            = $log_dir."/log_".$time."_".$pid.".log";
-      my ($sh_vmidx,$idx) = FileHandling::createSubmissionScript_vmatchIdx($j_out{$in},$tmp_dir,$plog,$pid,$proj,$mail);
-      my $id_vIdx         = FileHandling::submit_job($sh_vmidx,0,0,$plog);
-      my $chain_id        = $id_j.":".$id_vIdx;                                                                                          # start the parser only after Vmatch index and jellyfish have finished
-      my $sh_jParser      = FileHandling::createSubmissionScript_jellyfishParser($in,$j_out{$in},$pid,$proj,$str,$work_dir,$script,$tmp_dir,$log_dir,$plog,$out_dir,$idx,$ref_count,$mail);
-      my $id_jP           = FileHandling::submit_job($sh_jParser,1,$chain_id,$plog);                                                     # slurm script, 0:not chained/1:chained, job id: 0 = no chaining, >0 if chained    
+      my $plog               = $log_dir."/log_".$time."_".$pid.".log";
+      my $sh_jParser         = FileHandling::createSubmissionScript_jellyfishParser($in,$j_out{$in},$pid,$proj,$str,$work_dir,$script,$tmp_dir,$log_dir,$plog,$out_dir,$idx,$ref_count,$mail,$max_over);
+      my $id_jP              = FileHandling::submit_job($sh_jParser,1,$chain_id,$plog);                                                   # slurm script, 0:not chained/1:chained, job id: 0 = no chaining, >0 if chained    
       $pid++;
     }
   }
@@ -175,7 +185,9 @@ sub display_help{
   print "\t\t-a, --all\t\tSTR\tThis option accepts only 'yes' or 'no' as arguments (mandatory).\n\t\t\t\t\t\t'yes': generate a new database for a given kmer size,\n\t\t\t\t\t\t'no': enquire existing database for a given kmer size.\n";
   print "\t\t-k, --kmer\t\tINT\tThe length of the unique oligonucleotide (e.x. 40, mandatory).\n";
   print "\t\t-p, --project\t\tSTR\tUppmax project name. [default: b2015233]\n";
-  print "\t\t-r, --reference\t\tSTR\tThe path to the individual chromosomes of the genome of interest. [default: /sw/data/uppnex/reference/Homo_sapiens/hg19/chromosomes]\n";
+  print "\t\t-r, --reference\t\tSTR\tThe path to the individual chromosomes of the genome of interest. [default: /sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/Chromosomes]\n";
+  print "\t\t-W, --wgs\t\tSTR\tThe path to the whole genome sequence of interest. [default: /sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/WholeGenomeFasta/genome.fa]\n";
+  print "\t\t-v, --maxoverlap\t\tINT\tThe maximal overlap between 2 oligomers in percentage\n";
   print "\t\t-d, --db_name\t\tSTR\tThe path and name of the SQLite database. [default: unique_oligonucleotides.db]\n";
   print "\t\t-f, --formamid\t\tINT\tThe percentage of the formamid concentration. [default: 50]\n";
   print "\t\t-s, --salt\t\tFLOAT\tThe salt concentration [Na+] in M. [default: 0.42]\n";

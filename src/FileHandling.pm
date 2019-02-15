@@ -6,29 +6,36 @@ use IPC::System::Simple qw(capturex);
 use Log::Log4perl qw(:easy);
 use Bio::SeqIO;
 use File::Basename;
+use POSIX;
 require Exporter;
 
 our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ( 'all' => [ qw() ] );
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
-our @EXPORT = qw(&createSubmissionScript_checkAndCombine &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &calculate_filter_tm &get_gc &get_dg &log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_run &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &createSubmissionScript_vmatchParser &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmatchIdx);
+our @EXPORT = qw(&createSubmissionScript_checkAndCombine &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &calculate_filter_tm &get_gc &get_dg &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_ctrl1stFiltering &createSubmissionScript_vmatchIdx &createSubmissionScript_1stFiltering &prepare_vmatch_2ndRun);
 
 
 #############################
 # Preloaded methods go here #
 #############################
+sub get_log10{
+  my $n = shift;
+  return log($n)/log(10);
+}
+
 sub combine_seq_coord{
   my @seq  = @{$_[0]};
   my @coor = @{$_[1]};
   my @list = ();
   
   for(my $i = 0; $i < scalar(@seq); $i++){
-    my $id = $1 if($seq[$i] =~ /batch_(\d+_\d+)\.fa/);
+    my $id = $1 if($seq[$i] =~ /batch_(\d+.*\d+)\.fa/);
   
     for(my $j = 0; $j < scalar(@coor);$j++){
       my $cid = $1 if($coor[$j] =~ /coordinates_uniqueOligos_(\d+_\d+)\.tab/);
 
-      if($cid eq $id){
+      # not only the ids should overlap, but also the files should not be empty
+      if(($cid eq $id) and !(-z $coor[$j])){
         my $out = "filtered_uniqueOligos_".$id.".tab";
         my $str = pack("Z*Z*Z*",$seq[$i],$coor[$j],$out);
         push(@list,$str);
@@ -41,17 +48,17 @@ sub combine_seq_coord{
 
 
 sub process_jellyfish_output{
-  my ($in,$ref,$pid,$tmpdir,$gcmin,$gcmax,$kmer,$salt,$formamid,$homopoly,$log,$snictmp) = @_;
+  my ($in,$pid,$tmpdir,$gcmin,$gcmax,$kmer,$salt,$formamid,$homopoly,$log,$snictmp) = @_;
   my ($loc,$nuc_count,$bad_gc,$bp,$id,$sum,$poly) = (0,0,0,0,0,0,0,0);
   my ($i,$seq_nr)                                 = (1,1);
-  my $batch_size                                  = 40000000;                                       # size of a chunck: 40 Mb
+  my $batch_size                                  = 35000000;                                       # size of a chunck: 35 Mb
   my %collect                                     = ();
   
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   
   # create vmatch input directory
-  my $dir = $tmpdir."/vmatch_in_".$pid;
-  capturex("mkdir", ($dir)) if(!(-d $dir));
+  my $dir = $tmpdir."/vmRun/vmatch_in_".$pid;
+  capturex("mkdir","-p", ($dir)) if(!(-d $dir));
   
   # copy the jellyfish output to SNIC_TMP
   my $tmpin = $snictmp."/jellyfishOut_".$pid.".fa";
@@ -62,9 +69,9 @@ sub process_jellyfish_output{
     $homopoly = $1 if($homopoly =~ /(.*);$/);                                    # remove ";" if it exists at the end of the string
     $homopoly =~ tr/;/|/ if($homopoly =~ /;/);                                   # replace ";" with "|"
     
-    INFO "\tProcess the jellyfish output for pid $pid: filter homopolymers, calculate tm and GC, filter the oligos without a correct GC, and split the file in 40 Mb chunks.\n";
+    INFO "\tProcess the jellyfish output for pid $pid: filter homopolymers, calculate tm and GC, filter the oligos without a correct GC, and split the file in 35 Mb chunks.\n";
   }else{
-    INFO "\tProcess the jellyfish output for pid $pid: calculate tm and GC, filter the oligos without a correct GC value, and split the file in 40 Mb chunks.\n";
+    INFO "\tProcess the jellyfish output for pid $pid: calculate tm and GC, filter the oligos without a correct GC value, and split the file in 35 Mb chunks.\n";
   }
   
   my $obj = Bio::SeqIO->new(-file => $tmpin, -format => 'fasta');                # read the fasta file using Bio::SeqIO
@@ -84,7 +91,7 @@ sub process_jellyfish_output{
       next;
     }
     
-    my $tm = 81.5 + (0.41 * $gc) + (16.6 * log10($salt)) - (500 / $kmer) - (0.62 * $formamid);                    # calculate tm temperature
+    my $tm = 81.5 + (0.41 * $gc) + (16.6 * get_log10($salt)) - (500 / $kmer) - (0.62 * $formamid);                    # calculate tm temperature
     $sum  += $tm;
     
     my $batch_file        = $snictmp."/batch_".$i."_".$pid.".fa";
@@ -264,16 +271,10 @@ sub filter_overlapping_pos{
 }
 
 
-sub log10{
-  my $n = shift;
-  return log($n)/log(10);
-}
-
-
 sub process_vmatch_output{
-  my ($vmout,$log) = @_;
-  my $count        = 0;
-  my (%list,%uniq);
+  my ($vmout,$kmer,$log) = @_;
+  my $count              = 0;
+  my %uniq;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
   open IN,"<",$vmout or LOGDIE "\tCan't read the Vmatch output: $vmout!\n";
@@ -281,43 +282,15 @@ sub process_vmatch_output{
     chomp($_);
     next if(/^$/);                         # drop empty lines
     next if(/^#/);                         # drop description line
-    my $line = $_;
-    $line    =~ s/^\s+|\s+$//g;            # remove white space at the beginning and at the end of the line
-    my @tmp  = split(/\s+/,$line);
-    my $start = $tmp[2] + 1;  
-    my $stop = ($start + $tmp[4]) - 1;
-    my $chr  = $1 if($tmp[1] =~ /^(MT|Y|X|\d+)_.*/);
-    my $name = $1 if($tmp[5] =~ /(candidate_\d+_\d+)_gc/);
-      
-    if(exists($list{$name})){# multiple occurrance in the reference
-      my ($t_beg,$t_end,$t_chr,$flag) = unpack("iiZ*Z*",$list{$name});
-      $flag   = "no";                                                       # oligonucleotide is not unique: flag = no
-      my $str = pack("iiZ*Z*",$t_beg,$t_end,$t_chr,$flag);
-      $list{$name} = $str;
-    }else{
-      my $flag = "yes";
-      my $str  = pack("iiZ*Z*",$start,$stop,$chr,$flag);                   # start, stop, chr, flag=yes -> unique oligo
-      $list{$name} = $str;
-    }
+    my ($chr,$start,$name) = split(/\t/,$_);
+    $start += 1;                           # vmatch coordinates are 0-based
+    my $stop = ($start + $kmer) - 1;
+    my $str  = pack("Z*ii",$chr,$start,$stop);
+    $uniq{$name} = $str;
   }
   close IN;
- 
-  # check if all oligonucleotides have a unique match to the reference sequence
-  foreach my $qid (keys %list){
-    my @tmp  = unpack("iiZ*Z*",$list{$qid});
-    my $flag = $tmp[3];
-    
-    if($flag eq "no"){# oligo has multiple matches to the reference genome
-      $count++;
-    }else{# oligo is unique, flag = yes
-      my $str = pack("Z*ii",($tmp[2]+1),$tmp[0],$tmp[1]);
-      $uniq{$qid} = $str;
-    }
-  }
-  
-  my $percent = sprintf("%.1f",($count/keys(%list)*100));
-  INFO "\t\t".keys(%list)." oligonucleotides mapped on the reference chromosome: $vmout\n";
-  INFO "\t\t$count ($percent%) oligonucleotides mapped to multiple locations on the reference genome (i.e. reverse complemented matches, palindroms)\n";
+   
+  INFO "\t\t".keys(%uniq)." oligonucleotides mapped uniq on the reference chromosome for: $vmout\n";
   
   return %uniq;
 }
@@ -411,33 +384,31 @@ sub write_tmp_file{
 
 
 sub createSubmissionScript_vmatchIdx{
-  my ($ref_chr,$tmpdir,$log,$pid,$project,$mail) = @_;
+  my ($wgs,$tmpdir,$log,$project,$mail) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   
   INFO "\tCreate vmatch index and sh directories";
   my $dir_idx = $tmpdir."/vmatch_idx";
-  my $dir_sh  = $tmpdir."/vmatch_sh_".$pid;
   capturex("mkdir", ($dir_idx)) if(!(-d $dir_idx));
-  capturex("mkdir", ($dir_sh))  if(!(-d $dir_sh));
 
-  INFO "\tCreate shell script to generate the Vmatch-DB index for $pid: $ref_chr\n";
-  my $ref_idx = "hg19_pid".$pid;
-  my $symb    = $dir_idx."/hg19_pid".$pid;
-  my $idx     = $dir_sh."/vmatch_indexTree.sh";
-  my $ref     = basename($ref_chr);
+  INFO "\tCreate shell script to generate the Vmatch-DB index for: $wgs\n";
+  my $ref_idx = "hg19_wgs";
+  my $symb    = $dir_idx."/".$ref_idx;
+  my $idx     = $dir_idx."/vmatch_indexTree.sh";
+  my $ref     = basename($wgs);
   
-  open my $fh,'>', $idx or LOGDIE "\tCannot write the shell script to indices the ref. chromosome $ref_chr, pid $pid: file $idx\n";
+  open my $fh,'>', $idx or LOGDIE "\tCannot write the shell script to indices the ref. genome $wgs: file $idx\n";
     print $fh "#!/bin/bash -l\n";
     print $fh "#SBATCH -A $project\n";
     print $fh "#SBATCH -p core\n";
-    print $fh "#SBATCH -n 1\n";
-    print $fh "#SBATCH -t 02:00:00\n";
+    print $fh "#SBATCH -n 5\n";
+    print $fh "#SBATCH -t 04:00:00\n";
     print $fh "#SBATCH --open-mode=append\n";
     print $fh "#SBATCH -o $log\n";
     print $fh "#SBATCH -e $log\n";
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n\n";  
-    print $fh "IN=$ref_chr\n";
+    print $fh "IN=$wgs\n";
     print $fh "rsync \$IN \$SNIC_TMP\n\n";
     print $fh "DB=\$SNIC_TMP/$ref\n";
     print $fh "OUT=\$SNIC_TMP/$ref_idx\n\n";    
@@ -449,10 +420,10 @@ sub createSubmissionScript_vmatchIdx{
 }
 
 
-sub createSubmissionScript_vmatchParser{
-  my ($vm_out,$vm_in,$pid,$arguments,$tm,$work,$script,$tmpdir,$log,$logdir,$out_dir,$ref_count,$mail) = @_;
+sub createSubmissionScript_vmParser{
+  my ($vm_out,$vm_in,$pid,$arguments,$tm,$work,$script,$tmpdir,$log,$logdir,$out_dir,$ref_count,$mail,$idx) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
-  my $name    = $tmpdir."/my_vmatchParserFiltering_".$pid.".sh";
+  my $name    = $tmpdir."/my_VmParserFiltering_".$pid.".sh";
   my @tmp     = split(/::/,$arguments);
   my $account = $tmp[1];
   
@@ -463,7 +434,7 @@ sub createSubmissionScript_vmatchParser{
     print $fh "#SBATCH -p core\n";
     print $fh "#SBATCH -n 1\n";
     print $fh "#SBATCH -t 05:00:00\n";
-    print $fh "#SBATCH -J vmatchParserFiltering\n";
+    print $fh "#SBATCH -J vm2ndParserFiltering\n";
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n";
     print $fh "#SBATCH --open-mode=append\n";
@@ -472,7 +443,7 @@ sub createSubmissionScript_vmatchParser{
     print $fh "VM_OUT=$vm_out\n";
     print $fh "VM_IN=$vm_in\n";
     print $fh "ARG=\'$arguments\'\n\n";
-    print $fh "perl $script/vmatchParser.pl \$VM_OUT \$VM_IN \$ARG $pid $tm $work $script $tmpdir $log $logdir $out_dir $ref_count $mail \$SNIC_TMP\n";
+    print $fh "perl $script/vmatchParser.pl \$VM_OUT \$VM_IN \$ARG $pid $tm $work $script $tmpdir $log $logdir $out_dir $ref_count $mail \$SNIC_TMP $idx\n";    
   close $fh;
   
   return $name;
@@ -480,7 +451,7 @@ sub createSubmissionScript_vmatchParser{
 
 
 sub createSubmissionScript_jellyfishParser{
-  my ($infile,$ref,$pid,$account,$arguments,$work,$script,$tmp,$logdir,$log,$out_dir,$idx,$ref_count,$mail) = @_;
+  my ($infile,$ref,$pid,$account,$arguments,$work,$script,$tmp,$logdir,$log,$out_dir,$idx,$ref_count,$mail,$max_over) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   my $name = $tmp."/my_jellyfishParser_".$pid.".sh";
   
@@ -498,7 +469,7 @@ sub createSubmissionScript_jellyfishParser{
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n\n";
     print $fh "ARG=\'$arguments\'\n\n";
-    print $fh "perl $script/jellyfishParser.pl $infile $ref $pid \$ARG $work $script $tmp $logdir $log $out_dir $idx $ref_count $mail \$SNIC_TMP\n";
+    print $fh "perl $script/jellyfishParser.pl $infile $ref $pid \$ARG $work $script $tmp $logdir $log $out_dir $idx $ref_count $mail $max_over \$SNIC_TMP\n";
   close $fh;
   
   return $name;
@@ -551,47 +522,50 @@ sub createSubmissionScript_jellyfish{
 }
 
 
-sub prepare_vmatch_run{
-  my ($tmpdir,$pid,$kmer,$idx,$vm_inp,$project,$log,$logdir,$mail) = @_;
+sub prepare_vmatch_1stRun{
+  my ($tmpdir,$pid,$kmer,$idx,$vm_inp,$project,$log,$logdir,$mail,$max_over) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
   # vmatch sh-scripts and output directories
-  my $sh_dir = $tmpdir."/vmatch_sh_".$pid;
-  my $vm_out = $tmpdir."/vmatch_out_".$pid;
-  capturex("mkdir", ($vm_out)) if(!(-d $vm_out));
+  my $sh_dir = $tmpdir."/vmRun/vmatch_sh_".$pid;
+  my $vm_out = $tmpdir."/vmRun/vmatch_out_".$pid;
+  capturex("mkdir", "-p", ($vm_out)) if(!(-d $vm_out));
+  capturex("mkdir", "-p", ($sh_dir)) if(!(-d $sh_dir));
   
-  # create the shell scripts to run vmatch in parallel. Each submission script contain 16 vmatch calls
+  # create the shell scripts to run vmatch in parallel. Each submission script contain 4 vmatch calls
   INFO "\tCreate Vmatch submission scripts for process id $pid\n";
   my $id   = 0;
   my @list = read_dir($vm_inp,$log);
   LOGDIE "\tThe Vmatch directory does not contain any batch files for process id $pid. Check if any files were written out.\n" if(!@list);
   
-  # set the number of cores for each shell script
-  my $core  = 16;
-  $core     = scalar(@list) if(scalar(@list) <= 16);
-  
-  for(my $i = 0; $i < scalar(@list); $i+=$core){
+  # set the number of cores for each shell script: each job should get 4 cores
+  my $core_half  = 4;
+  $core_half     = scalar(@list) if(scalar(@list) <= $core_half);
+  my $core       = $core_half * 4;
+
+  for(my $i = 0; $i < scalar(@list); $i+=$core_half){
     my $sh   = $sh_dir."/vmatch_".$pid."_".$id.".sh";
     my @copy = ();
     my @comm = ();
     my @copi = ();
     
-    # adjust the core number if less than 16 jobs remaining
-    $core = (scalar(@list) - $i) if(($i + $core) > scalar(@list));
-  
+    # adjust the core number if less than 8 jobs remaining
+    $core_half = (scalar(@list) - $i) if(($i + $core_half) > scalar(@list));
+    $core      = $core_half * 4;
+
     open my $vm,">",$sh or LOGDIE "\tCannot write the shell script to run Vmatch for batch file $sh (pid $pid)!\n";
       print $vm "#!/bin/bash -l\n";
       print $vm "#SBATCH -A $project\n";
       print $vm "#SBATCH -p core\n";
       print $vm "#SBATCH -n $core\n";
-      print $vm "#SBATCH -t 02:00:00\n";
-      print $vm "#SBATCH -J vmatch\n";
+      print $vm "#SBATCH -t 03:30:00\n";
+      print $vm "#SBATCH -J vmatch1st\n";
       print $vm "#SBATCH --open-mode=append\n";
       print $vm "#SBATCH -o $log\n";
       print $vm "#SBATCH -e $log\n";
       print $vm "#SBATCH --mail-type=FAIL\n";
       print $vm "#SBATCH --mail-user=$mail\n\n";
-      print $vm "KMER=$kmer\n";
+      print $vm "KMER=$max_over\n";
       print $vm "REF=$idx\n\n";
       
       # copy the reference to the SNIC_TMP
@@ -599,20 +573,20 @@ sub prepare_vmatch_run{
       print $vm "wait\n\n";
       
       # get the individual vmatch calls for the current submission script
-      for(my $j   = $i; $j < ($i+$core) and $j < scalar(@list); $j++){
+      for(my $j   = $i; $j < ($i+$core_half) and $j < scalar(@list); $j++){
         my $tid   = $1 if($list[$j] =~ /batch_(\d+_\d+)\.fa/);                               # contain pid and unique number
         my $out   ="coordinates_uniqueOligos_".$tid.".tab";
         my $in    = $list[$j];
         my $name  = basename($list[$j]);
         my $idxn  = basename($idx);
 
-        my $moc = "srun -c 1 -n 1 --exclusive rsync ".$list[$j]." \$SNIC_TMP &";
+        my $moc = "srun -c 4 -n 1 --exclusive rsync ".$list[$j]." \$SNIC_TMP &";
         push(@copy,$moc);
 
-        my $com = "srun -c 1 -n 1 --exclusive vmatch -q \$SNIC_TMP/$name -l \$KMER -p -d -showdesc 100 \$SNIC_TMP/$idxn > \$SNIC_TMP/$out &";
+        my $com = "srun -c 4 -n 1 --exclusive vmatch -q \$SNIC_TMP/$name -l \$KMER -p -d -selfun mydb.so -showdesc 100 \$SNIC_TMP/$idxn > \$SNIC_TMP/$out &";
         push(@comm,$com);
 
-        my $str = "srun -c 1 -n 1 --exclusive rsync \$SNIC_TMP/$out $vm_out &";
+        my $str = "srun -c 4 -n 1 --exclusive rsync \$SNIC_TMP/$out $vm_out &";
         push(@copi,$str);
       }
       
@@ -639,6 +613,7 @@ sub prepare_vmatch_run{
    
   return ($sh_dir,$vm_out);          # path to all VMATCH shell scripts and output directories
 }
+
 
 
 sub createSubmissionScript_checkAndCombine{
@@ -668,15 +643,7 @@ sub createSubmissionScript_checkAndCombine{
 
 sub createSubmissionScript_filtering{
   my @list  = @{$_[0]};
-  my $log   = $_[1];
-  my $pid   = $_[2];
-  my $tmp   = $_[3];
-  my $mail  = $_[4];
-  my $proj  = $_[5];
-  my $arg   = $_[6];
-  my $tm_min= $_[7];
-  my $tm_max= $_[8];
-  my $script= $_[9];
+  my ($log,$pid,$tmp,$mail,$proj,$arg,$tm_min,$tm_max,$script) = ($_[1],$_[2],$_[3],$_[4],$_[5],$_[6],$_[7],$_[8],$_[9]);
   my $count = 0;
   my @collect;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
@@ -690,7 +657,7 @@ sub createSubmissionScript_filtering{
 
   # set the number of cores for each shell script
   my $core  = 16;
-  $core     = scalar(@list) if(scalar(@list) <= 16);
+  $core     = scalar(@list) if(scalar(@list) <= $core);
   
   for(my $x = 0; $x < scalar(@list); $x+=$core){
     my $sh_filter = $shdir."/filter_".$pid."_".$count.".sh";

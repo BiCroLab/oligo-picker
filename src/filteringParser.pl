@@ -13,9 +13,10 @@ Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 my @arg      = split(/::/,$arguments);
 my $degreeC  = $arg[10];
 my $salt     = $arg[8];
+my $kmer     = $arg[2];
 
 INFO "\tGet the coordinates and the sequences\n";
-my %vmCoord  = FileHandling::process_vmatch_output($coord,$log);
+my %vmCoord  = FileHandling::process_vmatch_output($coord,$kmer,$log);
 
 INFO "\tCheck the melting temperature for $fa\n";
 my ($ssfa,$pref) = filter_tm($fa,$output);
