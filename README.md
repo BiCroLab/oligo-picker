@@ -1,2 +1,3 @@
-# oligo-picker
-Pipeline for identification of FISHing location-specific oligonucleotide sequences.
+# OligoPicker
+
+Perl5 pipeline for identification of FISHing location-specific oligonucleotide sequences.
