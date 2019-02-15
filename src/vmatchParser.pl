@@ -12,6 +12,7 @@ Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 my @arg                       = split(/::/,$arguments);
 my ($project,$kmer,$tm_delta) = ($arg[1], $arg[2], $arg[7]);
 my $user                      = $arg[13];
+my $vm2run                    = $arg[17];
 my ($todo,$rerun_dir)         = check_jobs($jpt,$tmpdir,$pid);
 
 
@@ -29,11 +30,17 @@ if($todo eq "yes"){
   my $tm_max                    = $tm + $tm_delta;
 
   my ($g,$dir,$res)             = FileHandling::createSubmissionScript_filtering(\@list,$log,$pid,$tmpdir,$mail,$project,$arguments,$tm_min,$tm_max,$script);
-  my $sh_ctrl                   = FileHandling::createSubmissionScript_ctrl2ndVmRun($pid,$arguments,$mail,$tmpdir,$log,$script,$vm_in,$vm_out,$ref_count,$outdir,$res,$dir,$project,$idx,$logdir,$workdir);
-
-  # create cronjob to run the filtering step after the first vmatch run
-  my $cronjob     = FileHandling::createCronjob($g,$log,$tmpdir,$pid,$project,$user,$mail,$sh_ctrl,"filter");  
-  my $id          = FileHandling::submit_job($cronjob,0,0,$log,"cron");
+  
+  # CHECK IF THE SECOND VMATCH RUN SHOULD BE DONE OR NOT
+  if($vm2run eq "yes"){
+    my $sh_ctrl = FileHandling::createSubmissionScript_ctrl2ndVmRun($pid,$arguments,$mail,$tmpdir,$log,$script,$vm_in,$vm_out,$ref_count,$outdir,$res,$dir,$project,$idx,$logdir,$workdir);
+    my $cronjob = FileHandling::createCronjob($g,$log,$tmpdir,$pid,$project,$user,$mail,$sh_ctrl,"filter");                            # create cronjob to run the filtering step after the first vmatch run
+    my $id      = FileHandling::submit_job($cronjob,0,0,$log,"cron");
+  }else{# only one vmatch run
+    my $sh_ctrl = FileHandling::createSubmissionScript_ctrlLastStep($pid,$arguments,$mail,$tmpdir,$log,$script,$vm_in,$vm_out,$ref_count,$outdir,$res,$dir,$project,$idx,$logdir,$workdir);
+    my $cronjob = FileHandling::createCronjob($g,$log,$tmpdir,$pid,$project,$user,$mail,$sh_ctrl,"filter");                            # create cronjob to run the filtering step after the first vmatch run
+    my $id      = FileHandling::submit_job($cronjob,0,0,$log,"cron");
+  }
 }
 
 
@@ -84,3 +91,4 @@ sub check_jobs{
   
   return ($flag,$rerun);
 }
+

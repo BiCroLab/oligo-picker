@@ -10,8 +10,8 @@ use Math::Round qw(round);
 #                 the job in several subjobs (depending on the number of available chromosomes), and runs those
 #                 jobs in parallel.
 #authors         :Mihaela Martis
-#date            :20161124
-#version         :0.4
+#date            :20170523
+#version         :0.5
 #===============================================================================================================
 
 
@@ -21,7 +21,7 @@ my $driver         = "SQLite";
 my $project        = "b2015233";
 my $user           = "gabriele";
 my $work_dir       = "/proj/b2015233/nobackup/uniqueOligoPipeline_v0.4";
-my $script         = "/proj/b2015233/bils/kmer_pipeline_v0.4";
+my $script         = "/proj/b2015233/bils/kmer_pipeline_v0.5";
 my $wgs            = "/sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/WholeGenomeFasta/genome.fa";
 my $ref            = "/sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/Chromosomes";
 my $refname        = "human";
@@ -34,9 +34,10 @@ my $tmDelta        = 10;
 my $dist           = 10;
 my $sstmp          = 65;
 my $hpol           = "na";
-my $mismatches     = 5;                                        # number of mismatches allowed for the second vmatch run
+my $mismatches     = 5;                                        # number of mismatches allowed for the second vmatch run: only if the second vmatch run is requested
 my $max_overlap_p  = 60;                                       # maximal overlap between two oligomers in percentage
-my $vm2            = "yes";                                    # return only those oligos, which had passed the 2nd vmatch filtering
+my $vm2            = "yes";                                    # return only those oligos, which had passed the 2nd vmatch filtering: only if the second vmatch run is requested
+my $vm2run         = "yes";                                    # run the second Vmatch if set to "yes"
 
 require("$script/DbHandling.pm");
 require("$script/FileHandling.pm");
@@ -73,6 +74,7 @@ GetOptions( 'p|project=s'     => \$project,
             'u|user=s'        => \$user,
             'n|refname=s'     => \$refname,
             'V|vmatch2nd=s'   => \$vm2,
+            'R|run2ndvm=s'    => \$vm2run,
             'h|help'          => \&display_help);
 
 # CREATE WORKING DIRECTORIES: RESULTS, LOG, TMP
@@ -90,11 +92,13 @@ Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 my $flow = -1;
 if($db_flag and $kmer){
   LOGDIE "\tWrong argument for the option '-a'! This option accepts only 'yes' or 'no' as arguments. Use option -h or --help for usage!\n" if(lc($db_flag) ne "yes" and lc($db_flag) ne "no");
+  LOGDIE "\tOption '-k' or '--kmer' requires a positive number as argument\n" if(!$kmer or $kmer <= 0 or $kmer !~ /^[0-9]+$/);
+  
   $flow  = check_arguments($db_flag);
 }else{
   LOGDIE "\n\tThe options '-a', and '-k' are mandatory. Use -h for usage.\n"  if(!$db_flag and !$kmer);
-  LOGDIE "\n\tThe option '-a' is mandatory. Use -h for usage.\n"             if(!$db_flag);
-  LOGDIE "\n\tThe option '-k' is mandatory. Use -h for usage.\n"             if(!$kmer);
+  LOGDIE "\n\tThe option '-a' is mandatory. Use -h for usage.\n" if(!$db_flag);
+  LOGDIE "\n\tThe option '-k' is mandatory and needs to be a positive number > 0. Use -h for usage.\n" if(!$kmer);
 }
 
 # START THE PIPELINE WORKFLOW
@@ -111,19 +115,24 @@ sub main{
   # calculate the maximal overlap between 2 oligos in base pairs
   my $max_overlap = round(($kmer * $max_overlap_p) / 100);
   
+  # run only the first VMATCH: set the option $vm2 on "no" to return all data from the database ($vm2 = yes -> return only those oligos which passed the second vmatch run)
+  $vm2 = "no"  if($vm2run eq "no");
+  INFO "TEST: option vm2 is set to: $vm2, second vm run is set to: $vm2run\n";
+
   if($option == 2){# option = 2: DB enquiry for a specific region.
     LOGDIE "\tThe file $db_name does not exists\n" if(!(-e $db_name));                                                                                                        # check if database exists
     capturex("mkdir",($dbRes_dir)) if(!(-d $dbRes_dir));                                                                                                                      # create output directory
 
-    my $db_result  = DbHandling::enquire_db($chr, $begin, $end, $vm2, $kmer, $tmDelta, $gc_min, $gc_max, $driver, $db_name, $hflag, $refname, $max_overlap_p, $log);          # enquire the database
-    my $file_dbRes = $dbRes_dir."/requestedRegion_".$chr."_".$begin."_".$end."_kmer".$kmer."_gcMin".$gc_min."_gcMax".$gc_max."_dTm".$tmDelta."_hpol".$hflag."_".$refname."_overlap".$max_overlap_p."_2ndVM".$vm2.".bed";
-    FileHandling::write_DBresult($db_result,$file_dbRes,$log);                                                                                                                # write the result to a file
+    my $db_result  = DbHandling::enquire_db($chr, $begin, $end, $vm2, $vm2run, $kmer, $tmDelta, $gc_min, $gc_max, $driver, $db_name, $hflag, $refname, $max_overlap_p, $log);          # enquire the database
+    my $file_dbRes = $dbRes_dir."/requestedRegion_".$chr."_".$begin."_".$end."_only2ndVmHits_".$vm2."_run2ndVM_".$vm2run."_kmer".$kmer."_gcMin".$gc_min."_gcMax".$gc_max."_dTm".$tmDelta."_hpol".$hflag."_".$refname."_overlap".$max_overlap_p."_2ndVM".$vm2.".bed";
+
+    FileHandling::write_DBresult($db_result,$file_dbRes,$log);                         # write the result to a file
     
     capturex("rm",("-r",$tmp_dir)) if(-d $tmp_dir);                                                                                                                           # remove the tmp directory
     INFO "\tThe temporary directory has been successfully removed\n";
   }else{
-    $arguments = $driver."::".$project."::".$kmer."::".$db_name."::".$formamid."::".$gc_min."::".$gc_max."::".$tmDelta."::".$salt."::".$dist."::".$sstmp."::".$mismatches."::".$hpol."::".$user."::".$refname."::".$max_overlap_p."::".$vm2 if($option == 0);                                                          # option = 0: identify all unique oligos, no DB enquiry.
-    $arguments = $driver."::".$project."::".$kmer."::".$db_name."::".$formamid."::".$gc_min."::".$gc_max."::".$tmDelta."::".$salt."::".$dist."::".$sstmp."::".$mismatches."::".$hpol."::".$user."::".$refname."::".$max_overlap_p."::".$vm2."::".$chr."::".$begin."::".$end if($option == 1);                          # option = 1: identify all unique oligos + DB enquiry for a specific region.    
+    $arguments = $driver."::".$project."::".$kmer."::".$db_name."::".$formamid."::".$gc_min."::".$gc_max."::".$tmDelta."::".$salt."::".$dist."::".$sstmp."::".$mismatches."::".$hpol."::".$user."::".$refname."::".$max_overlap_p."::".$vm2."::".$vm2run if($option == 0);                                                          # option = 0: identify all unique oligos, no DB enquiry.
+    $arguments = $driver."::".$project."::".$kmer."::".$db_name."::".$formamid."::".$gc_min."::".$gc_max."::".$tmDelta."::".$salt."::".$dist."::".$sstmp."::".$mismatches."::".$hpol."::".$user."::".$refname."::".$max_overlap_p."::".$vm2."::".$vm2run."::".$chr."::".$begin."::".$end if($option == 1);                          # option = 1: identify all unique oligos + DB enquiry for a specific region.    
     LOGDIE "\tI'm confused. Which part of the pipeline do you want to run? Please check your parameters! Use -h for usage\n" if($option != 0 and $option != 1);
 
     # JELLYFISH BATCH SCRIPT: IDENTIFY UNIQUE KMERS
@@ -154,9 +163,7 @@ sub main{
 sub check_arguments{
   my $flag   = lc($_[0]);
   my $option = -1;
-  
-  LOGDIE "\tOption '-k' or '--kmer' requires a positive number as argument\n" if(!$kmer);
-  
+     
   if($flag eq "no"){# only database enquiry: kmer, gc_min, gc_max, tm_delta, db name, chromosom, start and end position options are required
     LOGDIE "\tOption '-c' or '--chromosom' requires an argument (e.x. '1', 'MT', or 'X').\n" if(!$chr);
     LOGDIE "\tOption '-b' or '--begin_pos' requires a positive number as argument.\n"        if(!$begin);
@@ -169,13 +176,19 @@ sub check_arguments{
   }else{
     if(!$chr and !$begin and !$end){
       $option = 0;                                                                           # identify unique kmer and load them to the db without searching for a specific region
-      INFO "\tTO DO: identify unique oligonucleotides and insert them into the database. PARAMETERS:\n\t-p $project -r $ref -W $wgs -d $db_name -f $formamid -g $gc_min -G $gc_max -t $tmDelta -s $salt -S $sstmp -D $dist -w $work_dir -v $max_overlap_p -a $db_flag -k $kmer -o $hpol -m $mail -M $mismatches -V $vm2\n";
+      INFO "\tTO DO: identify unique oligonucleotides and insert them into the database. PARAMETERS:\n\t-p $project -r $ref -W $wgs -d $db_name -f $formamid -g $gc_min -G $gc_max -t $tmDelta -s $salt -S $sstmp -D $dist -w $work_dir -v $max_overlap_p -a $db_flag -k $kmer -o $hpol -m $mail -M $mismatches -V $vm2 -R $vm2run\n";
  
       if($hpol eq "na"){# no homopolymers filtering
         INFO "\tNo homopolymer filtering activated\n";
       }else{
         $hpol = $1 if($hpol =~ /\"|\'(.*)\"|\'/);
         INFO "\tHomopolymer filtering activated: -o $hpol\n";
+      }
+      
+      if($vm2run eq "no"){
+        INFO "\tThe second Vmatch run is deactivated\n";
+      }else{
+        INFO "\tThe second Vmatch run is activated\n";
       }
     }else{
       LOGDIE "\tThe options -c, -b, and -e are mandatory if you want to enquire the database $db_name. Use -h for usage\n"  if(!$chr and !$begin and !$end);
@@ -184,15 +197,21 @@ sub check_arguments{
       LOGDIE "\tThe option '-e'/'--end_pos' requires a positive number as argument.\n"                                      if(!$end);
       
       $option = 1;                                          # identify unique kmers, load them to the db, and search for a specific region
-      INFO "\tTO DO: identify unique oligonucleotides, insert them into the database and extract oligos from a specific region.\n\tPARAMETERS:\n\t-p $project -r $ref -W $wgs -d $db_name -f $formamid -g $gc_min -G $gc_max -t $tmDelta -s $salt -S $sstmp -D $dist -w $work_dir -v $max_overlap_p -a $db_flag -k $kmer -o $hpol -m $mail -M $mismatches -c $chr -b $begin -e $end -V $vm2\n";
+      INFO "\tTO DO: identify unique oligonucleotides, insert them into the database and extract oligos from a specific region.\n\tPARAMETERS:\n\t-p $project -r $ref -W $wgs -d $db_name -f $formamid -g $gc_min -G $gc_max -t $tmDelta -s $salt -S $sstmp -D $dist -w $work_dir -v $max_overlap_p -a $db_flag -k $kmer -o $hpol -m $mail -M $mismatches -c $chr -b $begin -e $end -V $vm2 -R $vm2run\n";
      
       LOGDIE "\tThe value of the option '-M'/'--mismatch' is higher then 5 or equals 0. This is not allowed. Please check the parameter: mismatch=$mismatches!\n" if(($mismatches > 5) or ($mismatches == 0));
       LOGDIE "\tThe value of the option '-M'/'--mismatch' is not numeric: mismatch=$mismatches!" if($mismatches =~ /^[0-9.]+$/);
  
       if($hpol eq "na"){
-        INFO "\tNo homopolymer filtering activated\n";
+        INFO "\tNo homopolymer filtering is activated\n";
       }else{
-        INFO "\tHomopolymer filtering activated: -o $hpol\n";
+        INFO "\tHomopolymer filtering is activated: -o $hpol\n";
+      }
+      
+      if($vm2run eq "no"){
+        INFO "\tThe second Vmatch run is deactivated\n";
+      }else{
+        INFO "\tThe second Vmatch run is activated\n";
       }
     }
   }
@@ -222,6 +241,7 @@ sub display_help{
   print "\t\t-o, --homopolymer\tSTR\tA list of homopolymers separate by semi-colon, which should not be contained in the oligonucleotide sequences (optional, e.x. \'GGGG;CCCC;AAAAA;TTTTT\'). Please use quotation marks (\'\'). [default: na]\n";
   print "\t\t-p, --project\t\tSTR\tUppmax project name. [default: b2015233]\n";
   print "\t\t-r, --reference\t\tSTR\tThe path to the individual chromosomes of the genome of interest. [default: /sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/Chromosomes]\n";
+  print "\t\t-R, --run2ndvm\t\tSTR\tThis option accepts only 'yes' or 'no' as arguments. Choose 'yes' if you want to run the second Vmatch, and 'no' if you want to run only the first Vmatch. In case that you choose 'yes', you need to adjust the options '-V' (default: yes) and  and '-M' (default: 5) if necessary. [default: yes]\n";
   print "\t\t-s, --salt\t\tFLOAT\tThe salt concentration [Na+] in M. [default: 0.42]\n";
   print "\t\t-S, --ss_temp\t\tFLOAT\tThe threshold temperature for the secondary structure prediction [default: 65]\n";
   print "\t\t-t, --tm_delta\t\tINT\tThe degree of which the average melting temperature should be increased and decreased to form an interval. A positive integer is expected. [default: 10]\n";
@@ -232,3 +252,4 @@ sub display_help{
   print "\t\t-W, --wgs\t\tSTR\tThe path to the whole genome sequence of interest. [default: /sw/data/uppnex/igenomes/Homo_sapiens/Ensembl/GRCh37/Sequence/WholeGenomeFasta/genome.fa]\n";
   exit;
 }
+

@@ -26,3 +26,4 @@ my $sh_vmParser     = FileHandling::createSubmissionScript_vmParser($vm_out,$vm_
 # prepare and submit the cronjob to submit batches of vmatch calls and the vmatch parser after all other jobs finished
 my $cronjob         = FileHandling::createCronjob($vm_sh,$log,$tmp_dir,$pid,$proj,$user,$mail,$sh_vmParser,"vm1st");                                                                                # 0 = flag to show that there are no jobids yet
 my $id              = FileHandling::submit_job($cronjob,0,0,$log,"cron");
+

@@ -12,7 +12,7 @@ require Exporter;
 our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ( 'all' => [ qw() ] );
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
-our @EXPORT = qw(&createCronjob &createSubmissionScript_vmParser_2ndRun &filter_2ndVmRun &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_vmatchIdx &prepare_vmatch_2ndRun &createSubmissionScript_ctrl2ndVmRun);
+our @EXPORT = qw(&createCronjob &createSubmissionScript_vmParser_2ndRun &filter_2ndVmRun &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_vmatchIdx &prepare_vmatch_2ndRun &createSubmissionScript_ctrl2ndVmRun &createSubmissionScript_ctrlLastStep &write_tmp_aftervm1);
 
 
 #############################
@@ -98,6 +98,24 @@ sub createCronjob{
   close(CJ);
   capturex("chmod","a+wx", ($cj)); 
   return $cj;
+}
+
+
+sub write_tmp_aftervm1{
+  my @list = @{$_[0]};
+  my $file = $_[1];
+  my $log  = $_[2];
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+  
+  open my $fh,">",$file or LOGDIE "Cannot write the file $file\n";
+  foreach my $elm (@list){
+    my($sid,$seq,$start,$stop,$chr,$gc,$tm,$dg) = unpack("Z*Z*iiZ*fff");
+    print $fh "$sid\t$seq\t$start\t$stop\t$chr\t$gc\t$tm\t$dg\t2\n";                       # '2' specifies that only the first vmatch was executed, the second was not requested
+  }
+  close($fh);
+  
+  my $flag = "done";
+  return $flag;
 }
 
 
@@ -268,6 +286,35 @@ sub createSubmissionScript_ctrl2ndVmRun{
     print OS "JPT=\$1\n";
     print OS "NAME=\$2\n";
     print OS "perl $script/prepare_2ndVmatchRun.pl $res $pid \$ARG $mail $script $tmpdir $index $workdir $log $ref_count $out_dir $logdir \$JPT \$NAME\n";
+  close(OS);
+  capturex("chmod","a+wx", ($sh_name));
+
+  return $sh_name;
+}
+
+
+sub createSubmissionScript_ctrlLastStep{
+  my ($pid,$arguments,$mail,$tmpdir,$log,$script,$vm_in,$vm_out,$ref_count,$out_dir,$res,$dir,$project,$index,$logdir,$workdir) = @_;
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+     
+  my $sh_name = $tmpdir."/my_prepareLastStep_".$pid.".sh";
+  open OS,">",$sh_name or LOGDIE "\tCannot write the shell script which organises the last step after running only one vmatch run\n";
+    print OS "#!/bin/bash -l\n";
+    print OS "#SBATCH -A $project\n";
+    print OS "#SBATCH --qos=interact\n";
+    print OS "#SBATCH -p core\n";
+    print OS "#SBATCH -n 5\n";
+    print OS "#SBATCH -t 11:59:00\n";
+    print OS "#SBATCH -J lastStep\n";
+    print OS "#SBATCH --open-mode=append\n";
+    print OS "#SBATCH -o $log\n";
+    print OS "#SBATCH -e $log\n";
+    print OS "#SBATCH --mail-type=FAIL\n";
+    print OS "#SBATCH --mail-user=$mail\n\n";
+    print OS "ARG=\'$arguments\'\n";
+    print OS "JPT=\$1\n";
+    print OS "NAME=\$2\n";
+    print OS "perl $script/finish_afterOnlyOneVmatchRun.pl $res $pid \$ARG $mail $script $tmpdir $index $workdir $log $ref_count $out_dir $logdir \$JPT \$NAME \$SNIC_TMP\n";
   close(OS);
   capturex("chmod","a+wx", ($sh_name));
 
@@ -958,3 +1005,4 @@ sub createSubmissionScript_filtering{
 }
 1;
 __END__
+

@@ -29,10 +29,10 @@ sub connect2Db{
 
 
 sub createDB{
-  my ($driver,$db,$kmer,$dtm,$gcmin,$gcmax,$hflag,$refname,$overlap,$log) = @_;
+  my ($driver,$db,$kmer,$dtm,$gcmin,$gcmax,$hflag,$refname,$overlap,$log,$runtype) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-  my $table = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;  
+  my $table = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap."_run2ndVM".$runtype;  
   my $dbh   = connect2Db($driver,$db,$log);
   my $flag  = table_exists($dbh,$table);
 
@@ -94,14 +94,14 @@ sub table_exists{
 
 
 sub enquire_db{
-  my ($chr,$beg,$end,$vm2,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$refname,$overlap,$log) = @_;
+  my ($chr,$beg,$end,$vm2,$runtype,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$refname,$overlap,$log) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-  my $tab = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;
+  my $tab = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap."_run2ndVM".$runtype;
   my $dbh = connect2Db($driver,$name,$log);
   my $all;
   
-  INFO "\tStart DB enquiry for table $tab, chromosome: $chr, start: $beg, stop: $end, kmer: $kmer, gcmin: $gcmin, gcmax: $gcmax, dTm: $dtm\n";
+  INFO "\tStart DB enquiry for table $tab, chromosome: $chr, start: $beg, stop: $end, kmer: $kmer, gcmin: $gcmin, gcmax: $gcmax, dTm: $dtm, run2ndVM: $runtype\n";
   # check if the table exists in the database
   if(table_exists($dbh,$tab)){
     my $sql;
@@ -141,9 +141,10 @@ sub loadData2Db{
   my $refname= $_[8];
   my $overlap= $_[9];
   my $log    = $_[10];
+  my $runtype= $_[11];
 
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"}); 
-  my $tab    = "kmer".$kmer."_dtm".$tdelta."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;
+  my $tab    = "kmer".$kmer."_dtm".$tdelta."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap."_run2ndVM".$runtype;
   my $dbh    = connect2Db($driver,$db,$log);
   
   INFO "\tStart loading records to the database\n";
@@ -188,3 +189,4 @@ sub loadData2Db{
 
 1;
 __END__
+

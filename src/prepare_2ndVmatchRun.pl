@@ -15,7 +15,7 @@ my $user                            = $arg[13];
 my ($todo,$rerun_dir)               = check_jobs($jpt,$tmpdir,$pid);
 
 if($todo eq "yes"){
-  my $cronjob     = FileHandling::createCronjob($rerun_dir,$log,$tmpdir,$pid,$project,$user,$mail,$preScript,"filter");                                   # 0 = flag to show that there are no jobids yet
+  my $cronjob     = FileHandling::createCronjob($rerun_dir,$log,$tmpdir,$pid,$project,$user,$mail,$preScript,"filter");                  # 0 = flag to show that there are no jobids yet
   my $id          = FileHandling::submit_job($cronjob,0,0,$log,"cron");
 }else{# no jobs to rerun due to timeout
   capturex("rm","-f","-r",($rerun_dir));                                                                  # delete the directory since it should be empty
@@ -152,3 +152,4 @@ sub create_batches{
 
   return %out_files;
 }
+
