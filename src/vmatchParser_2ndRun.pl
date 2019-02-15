@@ -78,15 +78,15 @@ if($todo eq "yes"){# there are jobs which needs to be rerun -> prepare cronjob
     DbHandling::loadData2Db($driver,$tmpdb,$kmer,$tm_delta,$gcmin,$gcmax,\@unique,$hflag,$refname,$overlap,$log);
     capturex("rsync",($tmpdb,$dbname));
   
-    if(scalar(@arg) == 16){
+    if(scalar(@arg) == 17){
       INFO "\t".scalar(@unique)." unique oligonucleotides with a length of $kmer bases were successfully inserted into the database $dbname.\n";
       INFO "\tThere is no DB enquiry requested!\n";
-    }elsif(scalar(@arg) == 19){                                                                                                                    # create output directory
+    }elsif(scalar(@arg) == 20){                                                                                                                    # create output directory
       capturex("mkdir", ($outdir)) if(!(-d $outdir));
     
-      my ($chr,$start,$stop) = ($arg[16],$arg[17],$arg[18]);
-      my $result = DbHandling::enquire_db($chr,$start,$stop,$kmer,$tm_delta,$gcmin,$gcmax,$driver,$dbname,$hflag,$refname,$overlap,$log);                            # extract the data from the database
-      my $out    = $outdir."/requestedRegion_".$chr."_".$start."_".$stop."_kmer".$kmer."_gcMin".$gcmin."_gcMax".$gcmax."_dTm".$tm_delta."_hpol".$hflag."_".$refname."_overlap".$overlap.".bed";
+      my ($vm2,$chr,$start,$stop) = ($arg[16],$arg[17],$arg[18],$arg[19]);
+      my $result = DbHandling::enquire_db($chr,$start,$stop,$vm2,$kmer,$tm_delta,$gcmin,$gcmax,$driver,$dbname,$hflag,$refname,$overlap,$log);                            # extract the data from the database
+      my $out    = $outdir."/requestedRegion_".$chr."_".$start."_".$stop."_2ndVm_".$vm2."_kmer".$kmer."_gcMin".$gcmin."_gcMax".$gcmax."_dTm".$tm_delta."_hpol".$hflag."_".$refname."_overlap".$overlap.".bed";
  
       FileHandling::write_DBresult($result,$out,$log);                                                                                             # write the output of the database to a bed file
     }else{
@@ -134,11 +134,11 @@ sub check_jobs{
         my $core     = $cmd_core;
         $flag        = "yes";
         capturex("rsync",($file,$rerun));
-      }elsif($stat =~ /NODE_FAIL/){
+      }elsif($stat =~ /NODE_FAIL|FAILED/){
         my $file = $dat;
         $flag    = "yes";
         capturex("rsync",($file,$rerun));
-        INFO "\tThe job $file will be restarted due to the state \"node_fail\"\n";
+        INFO "\tThe job $file will be restarted due to the state \"$stat\"\n";
       }elsif($stat =~ /COMPLETED/){# nothing to do - this is the ideal case
       }else{
         LOGDIE "\tJobid:".$id." failed with the state $stat. Please restart it manually\n";

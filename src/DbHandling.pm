@@ -52,7 +52,8 @@ sub createDB{
                 TM             REAL NOT NULL,
                 DG             REAL NOT NULL,
                 START          INT  NOT NULL,
-                STOP           INT  NOT NULL,
+                STOP           INT  NOT NULL,                
+                DISCARDED2VM   INT  NOT NULL,
                 NAME           CHAR(70),
                 CHR            CHAR(50));
              );
@@ -93,7 +94,7 @@ sub table_exists{
 
 
 sub enquire_db{
-  my ($chr,$beg,$end,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$refname,$overlap,$log) = @_;
+  my ($chr,$beg,$end,$vm2,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$refname,$overlap,$log) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
   my $tab = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;
@@ -103,7 +104,14 @@ sub enquire_db{
   INFO "\tStart DB enquiry for table $tab, chromosome: $chr, start: $beg, stop: $end, kmer: $kmer, gcmin: $gcmin, gcmax: $gcmax, dTm: $dtm\n";
   # check if the table exists in the database
   if(table_exists($dbh,$tab)){
-    my $sql = qq(SELECT CHR,START,STOP,SEQ,TM,GC,DG FROM $tab WHERE CHR = \'$chr\' AND $beg <= START AND START <= $end ORDER BY START);        # get all oligos with the start position in between the requested region (even if the stop is beyond the requested border)
+    my $sql;
+    
+    if($vm2 eq "yes"){# filter out only those oligos which passed the 2nd vmatch filtering -> those with the flag "false" in the DISCARDED2VM column
+      $sql = qq(SELECT CHR,START,STOP,SEQ,TM,GC,DG,DISCARDED2VM FROM $tab WHERE CHR = \'$chr\' AND $beg <= START AND START <= $end AND DISCARDED2VM = 0 ORDER BY START);      # get all oligos with the start position in between the requested region (even if the stop is beyond the requested border), but only if they passed the 2nd vmatch filtering
+    }else{# filter out all oligos which passed the first vm, regardless if the DISCARDED2VM column is false or true
+      $sql = qq(SELECT CHR,START,STOP,SEQ,TM,GC,DG,DISCARDED2VM FROM $tab WHERE CHR = \'$chr\' AND $beg <= START AND START <= $end ORDER BY START);                           # get all oligos with the start position in between the requested region (even if the stop is beyond the requested border)
+    }
+
     my $sth = $dbh->prepare($sql) or LOGDIE $DBI::errstr."\n";
     
     $sth->{RaiseError} = 1;                                                                                                                    # any error will cause the DBI module to 'die' with an appropriate message
@@ -140,8 +148,8 @@ sub loadData2Db{
   
   INFO "\tStart loading records to the database\n";
   @list = sort {
-            my ($a_id,$a_seq,$a_start,$a_stop,$a_chr,$a_gc,$a_tm,$a_dg) = unpack("Z*Z*iiZ*fff", $a);
-            my ($b_id,$b_seq,$b_start,$b_stop,$b_chr,$b_gc,$b_tm,$b_dg) = unpack("Z*Z*iiZ*fff", $b);
+            my ($a_id,$a_seq,$a_start,$a_stop,$a_chr,$a_gc,$a_tm,$a_dg,$a_vm2) = unpack("Z*Z*iiZ*fffi", $a);
+            my ($b_id,$b_seq,$b_start,$b_stop,$b_chr,$b_gc,$b_tm,$b_dg,$b_vm2) = unpack("Z*Z*iiZ*fffi", $b);
             $a_chr cmp $b_chr || $a_start <=> $b_start;
           } @list;
   
@@ -150,12 +158,12 @@ sub loadData2Db{
   $dbh->{AutoCommit} = 0;
   $dbh->do("PRAGMA synchronous=OFF");
 
-  my $sql = qq(INSERT INTO $tab (CHR,START,STOP,SEQ,NAME,TM,GC,DG) VALUES (?,?,?,?,?,?,?,?));                          # ? - placeholders
+  my $sql = qq(INSERT INTO $tab (CHR,START,STOP,SEQ,NAME,TM,GC,DG,DISCARDED2VM) VALUES (?,?,?,?,?,?,?,?,?));                          # ? - placeholders
   my $sth = $dbh->prepare($sql);
   
   for(my $i = 0; $i < scalar(@list); $i++){
     $insert_count++;
-    my ($id,$seq,$start,$stop,$chr,$gc,$tm,$dg) = unpack("Z*Z*iiZ*fff",$list[$i]);
+    my ($id,$seq,$start,$stop,$chr,$gc,$tm,$dg,$d2v) = unpack("Z*Z*iiZ*fffi",$list[$i]);
     $sth->bind_param(1,$chr);
     $sth->bind_param(2,$start);
     $sth->bind_param(3,$stop);
@@ -164,6 +172,7 @@ sub loadData2Db{
     $sth->bind_param(6,$tm);
     $sth->bind_param(7,$gc);
     $sth->bind_param(8,$dg);
+    $sth->bind_param(9,$d2v);
     $sth->execute();
     LOGDIE "\t$DBI::errstr\n" if($dbh->err());
     

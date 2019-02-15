@@ -70,11 +70,11 @@ sub check_jobs{
         my $core     = $cmd_core;
         $flag        = "yes";
         capturex("rsync",($file,$rerun));
-      }elsif($stat =~ /NODE_FAIL/){
+      }elsif($stat =~ /NODE_FAIL|FAILED/){
         my $file = $dat;
         $flag    = "yes";
         capturex("rsync",($file,$rerun));
-        INFO "\tThe job $file will be restarted due to the state \"node_fail\"\n";
+        INFO "\tThe job $file will be restarted due to the state \"$stat\"\n";
       }elsif($stat =~ /COMPLETED/){# nothing to do - this is the ideal case
       }else{
         LOGDIE "\tJobid:".$id." failed with the state $stat. Please restart it manually\n";
