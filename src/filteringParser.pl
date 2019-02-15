@@ -10,28 +10,23 @@ my ($fa, $coord, $output, $tm_min, $tm_max, $arguments, $pwd, $log, $snictmp, $r
 require("$pwd/FileHandling.pm");
 Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-my @arg      = split(/::/,$arguments);
-my $degreeC  = $arg[10];
-my $salt     = $arg[8];
-my $kmer     = $arg[2];
+my @arg          = split(/::/,$arguments);
+my $degreeC      = $arg[10];
+my $salt         = $arg[8];
+my $kmer         = $arg[2];
+my %vmCoord      = FileHandling::process_vmatch_output($coord,$kmer,$log);          # get the coordinates and the sequences
+my ($ssfa,$pref) = filter_tm($fa,$output);                                          # check the melting temperature
 
-INFO "\tGet the coordinates and the sequences\n";
-my %vmCoord  = FileHandling::process_vmatch_output($coord,$kmer,$log);
-
-INFO "\tCheck the melting temperature for $fa\n";
-my ($ssfa,$pref) = filter_tm($fa,$output);
-
-INFO "\tCalculate minimal free energy for $ssfa\n";
+# calculate minimal free energy
 capturex("hybrid-ss-min",("-o",$pref,"-n","DNA","-t",$degreeC,"-T",$degreeC,"-N",$salt,$ssfa));
 
-INFO "\tFilter oligos with stable sec structure out\n";
+# filter oligos with stable sec structure out
 my $dg_out       = $pref.".ct";
 my %dgInfo       = get_dg($dg_out);
 filter_dg(\%dgInfo,\%vmCoord,$ssfa,$output);
 
-INFO "\tCopy the output $output to $result\n";
+# copy the output $output to $result
 capturex("rsync",($output,$result));
-
 
 
 sub filter_dg{

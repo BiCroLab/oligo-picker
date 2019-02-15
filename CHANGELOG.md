@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 
 
+## [0.3] June 2017
+### Changed
+- Added optional secondary VMATCH run for MM filter.
+
+
+
 ## [0.2] April 2016
 ### Changed
 - Major improvements.
@@ -26,3 +32,4 @@ First release.
 [Unreleased] https://github.com/ggirelli/oligo-picker  
 [0.1] https://github.com/ggirelli/oligo-picker/releases/tag/v0.1
 [0.2] https://github.com/ggirelli/oligo-picker/releases/tag/v0.2
+[0.3] https://github.com/ggirelli/oligo-picker/releases/tag/v0.3

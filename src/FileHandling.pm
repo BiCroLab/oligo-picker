@@ -12,12 +12,251 @@ require Exporter;
 our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ( 'all' => [ qw() ] );
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
-our @EXPORT = qw(&createSubmissionScript_checkAndCombine &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &calculate_filter_tm &get_gc &get_dg &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_ctrl1stFiltering &createSubmissionScript_vmatchIdx &createSubmissionScript_1stFiltering &prepare_vmatch_2ndRun);
+our @EXPORT = qw(&createCronjob &createSubmissionScript_vmParser_2ndRun &filter_2ndVmRun &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_vmatchIdx &prepare_vmatch_2ndRun &createSubmissionScript_ctrl2ndVmRun);
 
 
 #############################
 # Preloaded methods go here #
 #############################
+sub createCronjob{
+  my ($vm_path,$log,$tmpdir,$pid,$project,$user,$mail,$parser,$flag) = @_;
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+  
+  # create cronjob for the submission of vmatch jobs
+  my $cj_dir = $tmpdir."/cronjobs/";
+  capturex("mkdir","-p", ($cj_dir)) if(!(-d $cj_dir));
+  my $cj       = $cj_dir."cronjob_".$pid."_".$flag.".sh";
+  my $myscript = $cj_dir."check_".$pid."_".$flag.".sh";
+  my $fjid     = $cj_dir."jobids_paths_".$pid."_".$flag.".tab";
+  my $jobids   = $cj_dir."jobids_".$pid."_".$flag.".tab";
+ 
+  open HJ,">",$myscript or LOGDIE "\tCannot write the help cronjob script\n";
+    print HJ "#!/bin/bash -l\n\n";
+    print HJ "out=\$1\n";
+    print HJ "jobids=\$2\n";
+    print HJ "file=\$3\n";
+    print HJ "\n";
+    print HJ "jobnr=`squeue -u $user | grep -v \"JOBID\" | wc -l`\n";
+    print HJ "submit=\$file.toSubmit\n\n";
+    print HJ "# if file extension \"toSubmit\" exists, then submit the job\n";
+    print HJ "if [[ -e \"\$submit\" ]]\n";
+    print HJ "  then\n";
+    print HJ "    if (( \"\$jobnr\" < 300 ))\n";
+    print HJ "      then\n";
+    print HJ "        # submit the job\n";
+    print HJ "        line=`sbatch \$file 2>&1`\n";
+    print HJ "        err=`echo \$line | grep -ic \"error\"`\n";
+    print HJ "        if (( \"\$err\" == 0 ))   # no error \n";
+    print HJ "          then\n";
+    print HJ "            id=`echo \$line | grep -o \'[0-9]*\'`\n\n";
+    print HJ "            # add jobid to the other ids\n";
+    print HJ "            echo -e \"\$id\\t\$file\" >> \$out\n";
+    print HJ "            echo \$id >> \$jobids\n\n";
+    print HJ "            usleep 100000\n";
+    print HJ "            # delete processed file\n";
+    print HJ "            rm \$submit\n";
+    print HJ "        fi\n";
+    print HJ "    fi\n";
+    print HJ "fi\n";
+  close HJ;
+  capturex("chmod","a+x", ($myscript));
+
+  open CJ,">",$cj or LOGDIE "\tCannot write the cronjob script to organise the submission of vmatch/filtering jobs\n";
+    print CJ "#!/bin/bash -l\n";
+    print CJ "#SBATCH -A $project\n";
+    print CJ "#SBATCH --qos=interact\n";
+    print CJ "#SBATCH -p core -n 1\n";
+    print CJ "#SBATCH -t 05:00:00\n";
+    print CJ "#SBATCH -J cronJob\n";
+    print CJ "#SBATCH --open-mode=append\n";
+    print CJ "#SBATCH -o $log\n";
+    print CJ "#SBATCH -e $log\n";
+    print CJ "#SBATCH --mail-type=FAIL\n";
+    print CJ "#SBATCH --mail-user=$mail\n\n";
+    print CJ "path=\"$vm_path\"\n";
+    print CJ "parser=\"$parser\"\n";
+    print CJ "fid=\"$fjid\"\n";
+    print CJ "jid=\"$jobids\"\n";
+    print CJ "\n\n";
+    print CJ "# go through all sh jobs and submit them to the queue if the number of submitted jobs does not succeed 300\n";
+    print CJ "find \$path -type f -name \'*.sh\' -print0 | xargs -n 1 -0 $myscript \$fid \$jid\n";
+    print CJ "\n";
+    print CJ "# check if there are still jobs, which need to be submitted\n";
+    print CJ "check=`find \$path/ -type f -name '*.toSubmit' 2>/dev/null | wc -l`\n";
+    print CJ "if [[ \$check != 0 ]]\n";
+    print CJ "  then\n";
+    print CJ "    # resubmit this script with --begin set to run the job every 15 minutes\n";
+    print CJ "    sbatch --quiet --begin=now+450 $cj\n";
+    print CJ "  else\n";
+    print CJ "    sbatch --dependency=afterok:\$(cat \$jid \| tr '\\n' '\:' \| sed 's/\:\$//') \$parser \$fid \$parser\n";
+    print CJ "fi\n";
+  close(CJ);
+  
+  return $cj;
+}
+
+
+sub write_tmp_file{
+  my @list = @{$_[0]};
+  my $file = $_[1];
+  my $log  = $_[2];
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+  
+  open my $fh,">",$file or LOGDIE "Cannot write the file $file\n";
+  foreach my $elm (@list){
+    my ($sid,$desc,$nuc) = unpack("Z*Z*Z*",$elm);
+    my ($start,$stop,$chr,$gc,$tm,$dg) = split(/::/,$desc);
+    print $fh "$sid\t$nuc\t$start\t$stop\t$chr\t$gc\t$tm\t$dg\n";
+  }
+  close($fh);
+
+  my $flag = "done";
+  
+  return $flag;
+}
+
+
+sub filter_2ndVmRun{
+  my @list   = @{$_[0]};
+  my $log    = $_[1];
+  my $pid    = $_[2];
+  my $tmpdir = $_[3];
+  my @uniq = ();
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+  
+  foreach my $elm (@list){
+    my @files = unpack("Z*Z*Z*",$elm);
+    my $fa    = $files[0];
+    my $vm    = $files[1];
+    my %tmp_vm;
+
+    open my $vh,"<",$vm or LOGDIE "\tCannot read the 2nd Vmatch output: $vm\n";
+    while(<$vh>){
+      chomp($_);
+      next if(/^$/);                            # drop empty lines
+      next if(/^#/);                            # drop description lines
+      my ($chr,$pos,$name) = split(/\t/,$_);
+      $tmp_vm{$name} = $chr."::".$pos;
+    }
+    close($vh);
+ 
+    # select process_vmatch_output
+    my $obj = Bio::SeqIO->new(-file => $fa, -format => 'fasta');
+    while(my $o = $obj->next_seq){
+      my $head = $o->id;
+      if(exists($tmp_vm{$head})){
+        my $str = pack("Z*Z*Z*",$head,$o->desc,$o->seq);
+        push(@uniq,$str);
+      }
+    }
+  }
+
+  return @uniq;
+}
+
+
+sub prepare_vmatch_2ndRun{
+  my %vm_in                        = %{$_[0]};
+  my ($tmpdir,$vm_out,$vm_sh,$log) = ($_[1],$_[2],$_[3],$_[4]);
+  my ($pid,$kmer,$proj,$mail,$idx) = ($_[5],$_[6],$_[7],$_[8],$_[9]);
+  my $mismatch                     = $_[10];
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+
+  INFO "\tCreate 2nd Vmatch run submission scripts for process id $pid\n";
+  my $core = 16;
+  my $mism = ceil(($mismatch/$kmer)*100);
+  my @list = keys(%vm_in);
+  my $id   = 0;
+
+  # go through all batches and run 16 of them at one time
+  for(my $i = 0; $i < scalar(@list); $i+=$core){    
+    $core     = (scalar(@list) - $i) if(($i + $core) > scalar(@list));                                     # adjust the core number if less than 16 jobs remaining
+    my $sh    = $vm_sh."/vm_".$pid."_".$id.".sh";
+    my $dummy = $sh.".toSubmit";
+    my $jname = "vm_".$pid."_".$id;
+    my $idxn  = basename($idx);
+    my $dir   = dirname($idx);
+    my @outp  = ();
+    capturex("touch",($dummy));
+    
+    open my $vm, ">", $sh or LOGDIE "\tCannot write the shell script for the 2nd Vmatch run for batch file $sh (pid $pid)!\n";
+    print $vm "#!/bin/bash -l\n";
+    print $vm "#SBATCH -A $proj\n";
+
+    if($core == 16){# request the entire node if the number of jobs is 16
+      print $vm "#SBATCH -p node\n";
+      print $vm "#SBATCH -n 1\n";
+    }else{# request only the cores needed to run the job
+      $core = 7 if($core < 7);
+      print $vm "#SBATCH -p core\n";
+      print $vm "#SBATCH -n $core\n";
+    }
+    
+    print $vm "#SBATCH -t 20:00:00\n";
+    print $vm "#SBATCH -J $jname\n";
+    print $vm "#SBATCH --open-mode=append\n";
+    print $vm "#SBATCH -o $log\n";
+    print $vm "#SBATCH -e $log\n";
+    print $vm "#SBATCH --mail-type=FAIL\n";
+    print $vm "#SBATCH --mail-user=$mail\n";
+    print $vm "MISMATCH=$mism\n";
+    print $vm "REF=$idx\n\n";
+    print $vm "rsync -r $dir/ \$SNIC_TMP\n";
+    print $vm "wait\n\n";
+
+    # get the individual vmatch calls for the current submission script
+    for(my $j  = $i; $j < ($i+$core) and $j < scalar(@list); $j++){
+      my $batch = $list[$j];
+      my $base = basename($batch);
+      my $nr   = $1 if($base =~ /batch_(\d+_\d+).fa/);
+      my $out  = "coordinates_uniqueOligos_".$nr.".tab";
+  
+      print $vm "rsync ".$batch." \$SNIC_TMP\n";
+      print $vm "vmatch -q \$SNIC_TMP/$base -complete -p -d -h \${MISMATCH}b -showdesc 100 -selfun mydb.so \$SNIC_TMP/$idxn > \$SNIC_TMP/$out &\n\n";
+      push(@outp,$out);
+    }
+
+    print $vm "wait\n\n";
+    # copy now the results back to the local directory
+    foreach my $elm (@outp){
+      print $vm "rsync \$SNIC_TMP/$elm $vm_out\n";
+    }
+    close($vm);
+    $id++;
+  }
+
+  INFO $id." jobs submitted for the second vmatch run\n";
+  return ($vm_sh,$vm_out);
+}
+
+
+sub createSubmissionScript_ctrl2ndVmRun{
+  my ($pid,$arguments,$mail,$tmpdir,$log,$script,$vm_in,$vm_out,$ref_count,$out_dir,$res,$dir,$project,$index,$logdir,$workdir) = @_;
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+     
+  my $sh_name = $tmpdir."/my_prepare2ndVmatchRun_".$pid.".sh";
+  open OS,">",$sh_name or LOGDIE "\tCannot write the shell script which organises the second vmatch run\n";
+    print OS "#!/bin/bash -l\n";
+    print OS "#SBATCH -A $project\n";
+    print OS "#SBATCH -p core\n";
+    print OS "#SBATCH -n 5\n";
+    print OS "#SBATCH -t 170:00:00\n";
+    print OS "#SBATCH -J prepare_2ndVmRun\n";
+    print OS "#SBATCH --open-mode=append\n";
+    print OS "#SBATCH -o $log\n";
+    print OS "#SBATCH -e $log\n";
+    print OS "#SBATCH --mail-type=FAIL\n";
+    print OS "#SBATCH --mail-user=$mail\n\n";
+    print OS "ARG=\'$arguments\'\n";
+    print OS "JPT=\$1\n";
+    print OS "NAME=\$2\n";
+    print OS "perl $script/prepare_2ndVmatchRun.pl $res $pid \$ARG $mail $script $tmpdir $index $workdir $log $ref_count $out_dir $logdir \$JPT \$NAME\n";
+  close(OS);
+  
+  return $sh_name;
+}
+
+
 sub get_log10{
   my $n = shift;
   return log($n)/log(10);
@@ -26,7 +265,9 @@ sub get_log10{
 sub combine_seq_coord{
   my @seq  = @{$_[0]};
   my @coor = @{$_[1]};
+  my $log  = $_[2];
   my @list = ();
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   
   for(my $i = 0; $i < scalar(@seq); $i++){
     my $id = $1 if($seq[$i] =~ /batch_(\d+.*\d+)\.fa/);
@@ -51,13 +292,13 @@ sub process_jellyfish_output{
   my ($in,$pid,$tmpdir,$gcmin,$gcmax,$kmer,$salt,$formamid,$homopoly,$log,$snictmp) = @_;
   my ($loc,$nuc_count,$bad_gc,$bp,$id,$sum,$poly) = (0,0,0,0,0,0,0,0);
   my ($i,$seq_nr)                                 = (1,1);
-  my $batch_size                                  = 35000000;                                       # size of a chunck: 35 Mb
+  my $batch_size                                  = 5000000;                                       # size of a chunck: 5 Mb
   my %collect                                     = ();
   
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   
   # create vmatch input directory
-  my $dir = $tmpdir."/vmRun/vmatch_in_".$pid;
+  my $dir = $tmpdir."/vm_1stRun/vmatch_in_".$pid;
   capturex("mkdir","-p", ($dir)) if(!(-d $dir));
   
   # copy the jellyfish output to SNIC_TMP
@@ -69,9 +310,9 @@ sub process_jellyfish_output{
     $homopoly = $1 if($homopoly =~ /(.*);$/);                                    # remove ";" if it exists at the end of the string
     $homopoly =~ tr/;/|/ if($homopoly =~ /;/);                                   # replace ";" with "|"
     
-    INFO "\tProcess the jellyfish output for pid $pid: filter homopolymers, calculate tm and GC, filter the oligos without a correct GC, and split the file in 35 Mb chunks.\n";
+    INFO "\tProcess the jellyfish output for pid $pid: filter homopolymers, calculate tm and GC, filter the oligos without a correct GC, and split the file in 5 Mb chunks.\n";
   }else{
-    INFO "\tProcess the jellyfish output for pid $pid: calculate tm and GC, filter the oligos without a correct GC value, and split the file in 35 Mb chunks.\n";
+    INFO "\tProcess the jellyfish output for pid $pid: calculate tm and GC, filter the oligos without a correct GC value, and split the file in 5 Mb chunks.\n";
   }
   
   my $obj = Bio::SeqIO->new(-file => $tmpin, -format => 'fasta');                # read the fasta file using Bio::SeqIO
@@ -122,18 +363,14 @@ sub process_jellyfish_output{
   
   my $tm_avg = sprintf("%.3f",($sum/$id));
 
-  INFO "\t$nuc_count unique oligos found. $id sequences fulfiled the GC condition ($bad_gc removed). $i batch files generated.\n";
-  INFO "\t$poly sequences removed due to homopolymers filtering\n" if($homopoly ne "na");
-  INFO "\tAverage melting temperature: $tm_avg\n";
-  
-  INFO "\tCopy the batch files to $dir";
+  INFO "\tunique jellyfish oligos\t$nuc_count\n\tGC condition fulfilled\t$id\nGC rejected\t$bad_gc\n\taverage melting temperature\t$tm_avg\n";
+  INFO "\tremoved oligos due to homopolymers\t$poly\n" if($homopoly ne "na");
+  INFO "\t$i batch files generated\n";
+    
   foreach my $elm (keys %collect){                      # copy the batch files from snictmp to tmp
     capturex("rsync", ($elm,$dir));
   }
-  
-  # remove the jellyfish input file, since it is no longer necessary
-  INFO "\tRemove the jellyfish original output, since it is no longer requested: $in\n";
-  capturex("rm", ($in));
+  capturex("rm", ($in));                                # remove the jellyfish input file, since it is no longer necessary
   
   return ($dir,$tm_avg);
 }
@@ -189,18 +426,17 @@ sub mergeChromosomes{
 
 
 sub submit_job{
-  my ($script_file,$is_chain,$job_id,$log) = @_;                                             # SLURM script to be run; 0: not chained, 1: chained; job ID variable: 0 if no chaining, > 0 if chained; log file
+  my ($script_file,$is_chain,$job_id,$log,$flag) = @_;                                             # SLURM script to be run; 0: not chained, 1: chained; job ID variable: 0 if no chaining, > 0 if chained; log file
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
               
   # construct call to sbatch
   my $cmd = 'sbatch';
   $cmd   .= " --dependency=afterOK:$job_id" if($job_id !~ /^0$/ && $is_chain == 1);          # if chained add dependency
-  $cmd   .= " $script_file";  
+  $cmd   .= " $script_file";
+  $cmd   .= " none none none" if($flag eq "cron");
   my $out = `$cmd`;                                                                          # sumbit job
   ($out   =~ /^Submitted batch job (\d+)/) or LOGDIE "\tError executing $cmd\n";             # abort if no job ID is returned
   $job_id = $1;
-  
-  INFO "\tJob submitted to the queue: id=$job_id, name=$script_file\n\n";
   
   return $job_id;
 }
@@ -363,41 +599,20 @@ sub check{
 }
 
 
-sub write_tmp_file{
-  my $list = $_[0];
-  my $file = $_[1];
-  my $log  = $_[2];
-  my $pid  = $_[3];
-  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
-  my $flag = "yes";
-  
-  INFO "\tWrite out the temporary file (pid:$pid): $file\n";
-  open(TW,">$file") or LOGDIE "\tCannot write the file $file for pid $pid\n";
-  foreach my $i (@{$list}){
-    my ($id,$seq,$start,$stop,$chr,$gc,$tm,$dg) = unpack("Z*Z*iiZ*fff",$i);
-    print TW "$id\t$seq\t$start\t$stop\t$chr\t$gc\t$tm\t$dg\n";
-  }
-  close(TW);
-  
-  return $flag;
-}
-
-
 sub createSubmissionScript_vmatchIdx{
-  my ($wgs,$tmpdir,$log,$project,$mail) = @_;
+  my ($wgs,$tmp_dir,$log,$project,$mail) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   
-  INFO "\tCreate vmatch index and sh directories";
-  my $dir_idx = $tmpdir."/vmatch_idx";
+  my $dir_idx = $tmp_dir."/vmatch_idx";
   capturex("mkdir", ($dir_idx)) if(!(-d $dir_idx));
 
-  INFO "\tCreate shell script to generate the Vmatch-DB index for: $wgs\n";
+  INFO "\tGenerate the Vmatch-DB index for: $wgs\n";
   my $ref_idx = "hg19_wgs";
   my $symb    = $dir_idx."/".$ref_idx;
-  my $idx     = $dir_idx."/vmatch_indexTree.sh";
+  my $idx_sh  = $dir_idx."/vmatch_indexTree.sh";
   my $ref     = basename($wgs);
   
-  open my $fh,'>', $idx or LOGDIE "\tCannot write the shell script to indices the ref. genome $wgs: file $idx\n";
+  open my $fh,'>', $idx_sh or LOGDIE "\tCannot write the shell script to indices the ref. genome $wgs: file $idx_sh\n";
     print $fh "#!/bin/bash -l\n";
     print $fh "#SBATCH -A $project\n";
     print $fh "#SBATCH -p core\n";
@@ -416,7 +631,7 @@ sub createSubmissionScript_vmatchIdx{
     print $fh "rsync \$SNIC_TMP/$ref_idx* $dir_idx\n";
   close $fh;
   
-  return ($idx,$symb);
+  return ($idx_sh,$symb);
 }
 
 
@@ -433,43 +648,78 @@ sub createSubmissionScript_vmParser{
     print $fh "#SBATCH -A $account\n";
     print $fh "#SBATCH -p core\n";
     print $fh "#SBATCH -n 1\n";
-    print $fh "#SBATCH -t 05:00:00\n";
-    print $fh "#SBATCH -J vm2ndParserFiltering\n";
+    print $fh "#SBATCH -t 100:00:00\n";
+    print $fh "#SBATCH -J vm1stParserFiltering\n";
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n";
     print $fh "#SBATCH --open-mode=append\n";
     print $fh "#SBATCH -o $log\n";
     print $fh "#SBATCH -e $log\n";
+    print $fh "JPT=\$1\n";
+    print $fh "NAME=\$2\n";
     print $fh "VM_OUT=$vm_out\n";
     print $fh "VM_IN=$vm_in\n";
     print $fh "ARG=\'$arguments\'\n\n";
-    print $fh "perl $script/vmatchParser.pl \$VM_OUT \$VM_IN \$ARG $pid $tm $work $script $tmpdir $log $logdir $out_dir $ref_count $mail \$SNIC_TMP $idx\n";    
+    print $fh "perl $script/vmatchParser.pl \$VM_OUT \$VM_IN \$ARG $pid $tm $work $script $tmpdir $log $logdir $out_dir $ref_count $mail \$SNIC_TMP $idx \$JPT \$NAME\n";    
   close $fh;
   
   return $name;
 }
 
 
-sub createSubmissionScript_jellyfishParser{
-  my ($infile,$ref,$pid,$account,$arguments,$work,$script,$tmp,$logdir,$log,$out_dir,$idx,$ref_count,$mail,$max_over) = @_;
+sub createSubmissionScript_vmParser_2ndRun{
+  my ($vm_out,$vm_in,$pid,$arguments,$log,$tmpdir,$workdir,$script,$mail,$ref_count,$idx,$outdir,$logdir) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
-  my $name = $tmp."/my_jellyfishParser_".$pid.".sh";
+  my $name    = $tmpdir."/my_2ndVmParserFiltering_".$pid.".sh";
+  my @tmp     = split(/::/,$arguments);
+  my $project = $tmp[1];
+
+  INFO "\tCreate the 2nd Vmatch parser and filtering submission script for pid $pid!\n";
+  open my $fh,">",$name or LOGDIE "\tCannot write the shell script for the 2nd Vmatch parser $name (pid $pid)\n";
+    print $fh "#!/bin/bash -l\n";
+    print $fh "#SBATCH -A $project\n";
+    print $fh "#SBATCH -p core\n";
+    print $fh "#SBATCH -n 3\n";
+    print $fh "#SBATCH -t 25:00:00\n";
+    print $fh "#SBATCH -J vm2ndParserFiltering\n";
+    print $fh "#SBATCH --mail-type=FAIL\n";
+    print $fh "#SBATCH --mail-user=$mail\n";
+    print $fh "#SBATCH --open-mode=append\n";
+    print $fh "#SBATCH -o $log\n";
+    print $fh "#SBATCH -e $log\n";
+    print $fh "JPT=\$1\n";
+    print $fh "NAME=\$2\n";
+    print $fh "VM_OUT=$vm_out\n";
+    print $fh "VM_IN=$vm_in\n";
+    print $fh "ARG=\'$arguments\'\n\n";
+    print $fh "perl $script/vmatchParser_2ndRun.pl \$VM_OUT \$VM_IN $pid \$ARG $log $tmpdir $workdir $script $mail $ref_count $idx  $outdir $logdir \$SNIC_TMP \$JPT \$NAME\n";
+  close $fh;
+
+  return $name;
+}
+
+
+sub createSubmissionScript_jellyfishParser{
+  my ($infile,$ref,$pid,$project,$arguments,$work_dir,$script,$tmp_dir,$log_dir,$pid_log,$dbRes_dir,$vmIndex,$nr_ref,$mail,$max_overlap) = @_;
   
-  INFO "\tCreate the Jellyfish parser submission script for pid $pid -> $infile";
+  Log::Log4perl->easy_init({level => $INFO, file => ">> $pid_log"});
+  my $name = $tmp_dir."/my_jellyfishParser_".$pid.".sh";
+  
+  INFO "\tParse Jellyfish output for pid $pid -> $infile";
   open my $fh,">",$name or LOGDIE "\tCannot write the shell script for the jellyfish parser $name\n";
     print $fh "#!/bin/bash -l\n";
-    print $fh "#SBATCH -A $account\n";
+    print $fh "#SBATCH -A $project\n";
     print $fh "#SBATCH -p core\n";
     print $fh "#SBATCH -n 1\n";
     print $fh "#SBATCH -t 10:00:00\n";
     print $fh "#SBATCH -J jellyfishParser_$pid\n";
     print $fh "#SBATCH --open-mode=append\n";
-    print $fh "#SBATCH -o $log\n";
-    print $fh "#SBATCH -e $log\n";
+    print $fh "#SBATCH -o $pid_log\n";
+    print $fh "#SBATCH -e $pid_log\n";
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n\n";
     print $fh "ARG=\'$arguments\'\n\n";
-    print $fh "perl $script/jellyfishParser.pl $infile $ref $pid \$ARG $work $script $tmp $logdir $log $out_dir $idx $ref_count $mail $max_over \$SNIC_TMP\n";
+    print $fh "perl $script/jellyfishParser.pl $infile $ref $pid \$ARG $work_dir $script $tmp_dir $log_dir $pid_log $dbRes_dir $vmIndex $nr_ref $mail $max_overlap \$SNIC_TMP\n";
   close $fh;
   
   return $name;
@@ -477,31 +727,30 @@ sub createSubmissionScript_jellyfishParser{
 
 
 sub createSubmissionScript_jellyfish{
-  my ($indir,$account,$kmer,$tmp,$log,$mail) = @_;
+  my ($indir,$project,$kmer,$tmp_dir,$log,$mail) = @_;  
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
   my %tmp_out;
-  INFO "\tCreate the Jellyfish submission script. Call Jellyfish for each chromosome individually!";  
-
+  
   # create the output directories and output files
-  my $name      = $tmp."/my_jellyfish.sh";
-  my $dir_out   = $tmp."/jellyfish";
-  my @list      = get_reference($indir,$log);
-  my $ref_count = scalar(@list);
+  my $name    = $tmp_dir."/my_jellyfish.sh";
+  my $dir_out = $tmp_dir."/jellyfish";
+  my @list    = get_reference($indir,$log);
+  my $nr_ref  = scalar(@list);
   capturex("mkdir",($dir_out)) if(!(-d $dir_out));
   
   open my $fh,">",$name or LOGDIE "\tCannot write the shell script for the jellyfish invoice $name\n";
     print $fh "#!/bin/bash -l\n";
-    print $fh "#SBATCH -A $account\n";
+    print $fh "#SBATCH -A $project\n";
     print $fh "#SBATCH -p core\n";
     print $fh "#SBATCH -n 10\n";
-    print $fh "#SBATCH -t 02:30:00\n";
+    print $fh "#SBATCH -t 03:30:00\n";
     print $fh "#SBATCH -J jellyfish\n";
     print $fh "#SBATCH --open-mode=append\n";
     print $fh "#SBATCH -o $log\n";
     print $fh "#SBATCH -e $log\n";
     print $fh "#SBATCH --mail-type=FAIL\n";
     print $fh "#SBATCH --mail-user=$mail\n\n";
-    print $fh "module load bioinfo-tools jellyfish\n\n";
+    print $fh "module load bioinfo-tools jellyfish &>/dev/null\n\n";
     
     foreach my $dat (@list){
       my $tout       = "merCount_".$1."jf" if $dat =~ /(.*)\.fa/;                       # binary file
@@ -515,10 +764,10 @@ sub createSubmissionScript_jellyfish{
       print $fh "jellyfish dump \$SNIC_TMP/$tout -o \$SNIC_TMP/$output\n\n";
     }    
     print $fh "scp \$SNIC_TMP/uniqueOligos_kmer* $dir_out\n";
-    print $fh "module unload bioinfo-tools jellyfish\n";
+    print $fh "module unload bioinfo-tools jellyfish &>/dev/null\n";
   close $fh;
 
-  return ($name,$ref_count,\%tmp_out);
+  return ($name,$nr_ref,\%tmp_out);
 }
 
 
@@ -527,117 +776,79 @@ sub prepare_vmatch_1stRun{
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
   # vmatch sh-scripts and output directories
-  my $sh_dir = $tmpdir."/vmRun/vmatch_sh_".$pid;
-  my $vm_out = $tmpdir."/vmRun/vmatch_out_".$pid;
+  my $sh_dir = $tmpdir."/vm_1stRun/vmatch_sh_".$pid;
+  my $vm_out = $tmpdir."/vm_1stRun/vmatch_out_".$pid;
   capturex("mkdir", "-p", ($vm_out)) if(!(-d $vm_out));
   capturex("mkdir", "-p", ($sh_dir)) if(!(-d $sh_dir));
-  
+
   # create the shell scripts to run vmatch in parallel. Each submission script contain 4 vmatch calls
   INFO "\tCreate Vmatch submission scripts for process id $pid\n";
-  my $id   = 0;
   my @list = read_dir($vm_inp,$log);
   LOGDIE "\tThe Vmatch directory does not contain any batch files for process id $pid. Check if any files were written out.\n" if(!@list);
-  
-  # set the number of cores for each shell script: each job should get 4 cores
-  my $core_half  = 4;
-  $core_half     = scalar(@list) if(scalar(@list) <= $core_half);
-  my $core       = $core_half * 4;
 
-  for(my $i = 0; $i < scalar(@list); $i+=$core_half){
-    my $sh   = $sh_dir."/vmatch_".$pid."_".$id.".sh";
-    my @copy = ();
-    my @comm = ();
-    my @copi = ();
+  # set the number of cores for each shell script: each job should get 1 cores
+  my $core = 16;
+  my $id   = 0;
+
+  for(my $i = 0; $i < scalar(@list); $i+=$core){
+    my $sh    = $sh_dir."/vmatch_".$pid."_".$id.".sh";
+    my $dummy = $sh.".toSubmit";
+    my $jname = "vm1st_".$pid."_".$id;
+    my $idxn  = basename($idx);
+    my $dir   = dirname($idx);
+    my @outp  = ();
+    $core     = (scalar(@list) - $i) if(($i + $core) > scalar(@list));                                     # adjust the core number if less than 16 jobs remaining
     
-    # adjust the core number if less than 8 jobs remaining
-    $core_half = (scalar(@list) - $i) if(($i + $core_half) > scalar(@list));
-    $core      = $core_half * 4;
-
-    open my $vm,">",$sh or LOGDIE "\tCannot write the shell script to run Vmatch for batch file $sh (pid $pid)!\n";
-      print $vm "#!/bin/bash -l\n";
-      print $vm "#SBATCH -A $project\n";
+    capturex("touch",($dummy));
+    
+    open my $vm, ">", $sh or LOGDIE "\tCannot write the shell script for the 1st Vmatch run for batch file $sh (pid $pid)!\n";
+    print $vm "#!/bin/bash -l\n";
+    print $vm "#SBATCH -A $project\n";
+    
+    if($core == 16){# request the entire node if the number of jobs is 16
+      print $vm "#SBATCH -p node\n";
+      print $vm "#SBATCH -n 1\n";
+    }else{# request only the cores needed to run the job
+      $core = 7 if($core < 7);                         # at least 7 cores are necessary to avoid the paging problem
       print $vm "#SBATCH -p core\n";
       print $vm "#SBATCH -n $core\n";
-      print $vm "#SBATCH -t 03:30:00\n";
-      print $vm "#SBATCH -J vmatch1st\n";
-      print $vm "#SBATCH --open-mode=append\n";
-      print $vm "#SBATCH -o $log\n";
-      print $vm "#SBATCH -e $log\n";
-      print $vm "#SBATCH --mail-type=FAIL\n";
-      print $vm "#SBATCH --mail-user=$mail\n\n";
-      print $vm "KMER=$max_over\n";
-      print $vm "REF=$idx\n\n";
-      
-      # copy the reference to the SNIC_TMP
-      print $vm "rsync $idx* \$SNIC_TMP\n";
-      print $vm "wait\n\n";
-      
-      # get the individual vmatch calls for the current submission script
-      for(my $j   = $i; $j < ($i+$core_half) and $j < scalar(@list); $j++){
-        my $tid   = $1 if($list[$j] =~ /batch_(\d+_\d+)\.fa/);                               # contain pid and unique number
-        my $out   ="coordinates_uniqueOligos_".$tid.".tab";
-        my $in    = $list[$j];
-        my $name  = basename($list[$j]);
-        my $idxn  = basename($idx);
+    }
+    
+    print $vm "#SBATCH -t 30:00:00\n";
+    print $vm "#SBATCH -J $jname\n";
+    print $vm "#SBATCH --open-mode=append\n";
+    print $vm "#SBATCH -o $log\n";
+    print $vm "#SBATCH -e $log\n";
+    print $vm "#SBATCH --mail-type=FAIL\n";
+    print $vm "#SBATCH --mail-user=$mail\n\n";
+    print $vm "KMER=$max_over\n";
+    print $vm "REF=$idx\n\n";
+    print $vm "rsync -r $dir/ \$SNIC_TMP\n";
+    print $vm "wait\n\n";
 
-        my $moc = "srun -c 4 -n 1 --exclusive rsync ".$list[$j]." \$SNIC_TMP &";
-        push(@copy,$moc);
+    # get the individual vmatch calls for the current submission script
+    for(my $j  = $i; $j < ($i+$core) and $j < scalar(@list); $j++){
+      my $batch = $list[$j];
+      my $base = basename($batch);
+      my $nr   = $1 if($base =~ /batch_(\d+_\d+).fa/);
+      my $out  = "coordinates_uniqueOligos_".$nr.".tab";
+  
+      print $vm "rsync ".$batch." \$SNIC_TMP\n";
+      print $vm "vmatch -q \$SNIC_TMP/$base -l \$KMER -p -d -selfun mydb.so -showdesc 100 \$SNIC_TMP/$idxn > \$SNIC_TMP/$out &\n\n";
+      push(@outp,$out);
+    }
 
-        my $com = "srun -c 4 -n 1 --exclusive vmatch -q \$SNIC_TMP/$name -l \$KMER -p -d -selfun mydb.so -showdesc 100 \$SNIC_TMP/$idxn > \$SNIC_TMP/$out &";
-        push(@comm,$com);
-
-        my $str = "srun -c 4 -n 1 --exclusive rsync \$SNIC_TMP/$out $vm_out &";
-        push(@copi,$str);
-      }
-      
-      # copy the files to the SNIC_TMP
-      foreach my $elm (@copy){
-        print $vm $elm."\n";
-      }
-      print $vm "wait\n\n";
-      
-      # run vmatch
-      foreach my $lem (@comm){
-        print $vm $lem."\n";
-      }
-      print $vm "wait\n\n";
-      
-      # go through the generated output files and copy them back to the login node
-      foreach my $elm (@copi){
-        print $vm "$elm\n";
-      }
-      print $vm "wait\n";
-    close $vm;
+    print $vm "wait\n\n";
+    # copy now the results back to the local directory
+    foreach my $elm (@outp){
+      print $vm "rsync \$SNIC_TMP/$elm $vm_out\n";
+    }
+    close($vm);
     $id++;
   }
-   
+
+  INFO $id." jobs submitted for the second vmatch run\n";
   return ($sh_dir,$vm_out);          # path to all VMATCH shell scripts and output directories
-}
-
-
-
-sub createSubmissionScript_checkAndCombine{
-  my ($pid,$vm_in,$vm_out,$dir,$ref_count,$mail,$log,$outdir,$tmpdir,$script,$arguments,$res,$project) = @_;
-  Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
-
-  my $overlap_sh = $tmpdir."/my_overlapCheck_DBload_".$pid.".sh";
-  open OS,">",$overlap_sh or LOGDIE "\tCannot write the shell script for the filtering step $overlap_sh\n";
-    print OS "#!/bin/bash -l\n";
-    print OS "#SBATCH -A $project\n";
-    print OS "#SBATCH -p core\n";
-    print OS "#SBATCH -n 5\n";
-    print OS "#SBATCH -t 10:00:00\n";
-    print OS "#SBATCH -J overlapCheck_DBload\n";
-    print OS "#SBATCH --open-mode=append\n";
-    print OS "#SBATCH -o $log\n";
-    print OS "#SBATCH -e $log\n";
-    print OS "#SBATCH --mail-type=ALL\n";
-    print OS "#SBATCH --mail-user=$mail\n\n";
-    print OS "ARG=\'$arguments\'\n";
-    print OS "perl $script/checkAndCombine.pl $res \$ARG $pid $script $tmpdir $outdir $log \$SNIC_TMP $vm_in $vm_out $dir $ref_count\n";
-  close(OS);
-
-  return $overlap_sh;
 }
 
 
@@ -645,9 +856,9 @@ sub createSubmissionScript_filtering{
   my @list  = @{$_[0]};
   my ($log,$pid,$tmp,$mail,$proj,$arg,$tm_min,$tm_max,$script) = ($_[1],$_[2],$_[3],$_[4],$_[5],$_[6],$_[7],$_[8],$_[9]);
   my $count = 0;
-  my @collect;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
+  INFO "\tCheck the melting temperature, calculate the minimal free energy, and filter out those with stable sec. structure\n";
   my $dir   = $tmp."/filter_".$pid;
   my $shdir = $dir."/sh";
   my $res   = $dir."/results";
@@ -661,16 +872,20 @@ sub createSubmissionScript_filtering{
   
   for(my $x = 0; $x < scalar(@list); $x+=$core){
     my $sh_filter = $shdir."/filter_".$pid."_".$count.".sh";
+    my $dummy     = $sh_filter.".toSubmit";
     my @commands  = ();
     my @copies    = ();
     $core         = (scalar(@list) - $x) if(($x + $core) > scalar(@list));                      # adjust the core number if less than 16 jobs remaining
   
+    # create dummy file for the shell script which should be submitted
+    capturex("touch",($dummy));
+
     open my $fh,">",$sh_filter or LOGDIE "\tCannot write the shell script for the filtering step $sh_filter\n";
       print $fh "#!/bin/bash -l\n";
       print $fh "#SBATCH -A $proj\n";
       print $fh "#SBATCH -p core\n";
       print $fh "#SBATCH -n $core\n";
-      print $fh "#SBATCH -t 15:00:00\n";
+      print $fh "#SBATCH -t 50:00:00\n";
       print $fh "#SBATCH -J filtering\n";
       print $fh "#SBATCH --open-mode=append\n";
       print $fh "#SBATCH -o $log\n";
@@ -686,10 +901,10 @@ sub createSubmissionScript_filtering{
         my $cord  = basename($tmp[1]);
         my $out   = $tmp[2];
       
-        my $bef = "srun -c 1 -n 1 --exclusive rsync ".$tmp[0]." ".$tmp[1]." \$SNIC_TMP &";
+        my $bef = "rsync ".$tmp[0]." ".$tmp[1]." \$SNIC_TMP &";
         push(@copies,$bef);
 
-        my $str = "srun -c 1 -n 1 --exclusive perl $script/filteringParser.pl \$SNIC_TMP/$fa \$SNIC_TMP/$cord \$SNIC_TMP/$out $tm_min $tm_max \$ARG $script $log \$SNIC_TMP $res &";
+        my $str = "perl $script/filteringParser.pl \$SNIC_TMP/$fa \$SNIC_TMP/$cord \$SNIC_TMP/$out $tm_min $tm_max \$ARG $script $log \$SNIC_TMP $res &";
         push(@commands,$str);
       }
     
@@ -707,10 +922,9 @@ sub createSubmissionScript_filtering{
     close $fh;
   
     $count++;
-    push(@collect,$sh_filter);
   }
   
-  return (\@collect,$dir,$res);
+  return ($shdir,$dir,$res);
 }
 1;
 __END__

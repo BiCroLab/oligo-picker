@@ -29,10 +29,10 @@ sub connect2Db{
 
 
 sub createDB{
-  my ($driver,$db,$kmer,$dtm,$gcmin,$gcmax,$hflag,$log) = @_;
+  my ($driver,$db,$kmer,$dtm,$gcmin,$gcmax,$hflag,$refname,$overlap,$log) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-  my $table = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag;  
+  my $table = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;  
   my $dbh   = connect2Db($driver,$db,$log);
   my $flag  = table_exists($dbh,$table);
 
@@ -93,10 +93,10 @@ sub table_exists{
 
 
 sub enquire_db{
-  my ($chr,$beg,$end,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$log) = @_;
+  my ($chr,$beg,$end,$kmer,$dtm,$gcmin,$gcmax,$driver,$name,$hflag,$refname,$overlap,$log) = @_;
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
-  my $tab = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag;
+  my $tab = "kmer".$kmer."_dtm".$dtm."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;
   my $dbh = connect2Db($driver,$name,$log);
   my $all;
   
@@ -130,10 +130,12 @@ sub loadData2Db{
   my $gcmax  = $_[5];
   my @list   = @{$_[6]};
   my $hflag  = $_[7];
-  my $log    = $_[8];
+  my $refname= $_[8];
+  my $overlap= $_[9];
+  my $log    = $_[10];
 
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"}); 
-  my $tab    = "kmer".$kmer."_dtm".$tdelta."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag;
+  my $tab    = "kmer".$kmer."_dtm".$tdelta."_gcmin".$gcmin."_gcmax".$gcmax."_hpol".$hflag."_".$refname."_overlap".$overlap;
   my $dbh    = connect2Db($driver,$db,$log);
   
   INFO "\tStart loading records to the database\n";
