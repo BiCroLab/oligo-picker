@@ -12,7 +12,7 @@ require Exporter;
 our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ( 'all' => [ qw() ] );
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
-our @EXPORT = qw(&createCronjob &createSubmissionScript_vmParser_2ndRun &filter_2ndVmRun &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_vmatchIdx &prepare_vmatch_2ndRun &createSubmissionScript_ctrl2ndVmRun &createSubmissionScript_ctrlLastStep &write_tmp_aftervm1);
+our @EXPORT = qw(&createCronjob &remove_overlapping_oligos &find_unique_pos &createSubmissionScript_vmParser_2ndRun &filter_2ndVmRun &createSubmissionScript_filtering &combine_seq_coord &submit_job &filter_overlapping_pos &get_log10 &write_DBresult &process_jellyfish_output &prepare_vmatch_1stRun &createSubmissionScript_jellyfish &createSubmissionScript_jellyfishParser &read_dir &process_vmatch_output &check &write_tmp_file &mergeChromosomes &createSubmissionScript_vmParser &createSubmissionScript_vmatchIdx &prepare_vmatch_2ndRun &createSubmissionScript_ctrl2ndVmRun &createSubmissionScript_ctrlLastStep &write_tmp_aftervm1);
 
 
 #############################
@@ -64,7 +64,6 @@ sub createCronjob{
   open CJ,">",$cj or LOGDIE "\tCannot write the cronjob script to organise the submission of vmatch/filtering jobs\n";
     print CJ "#!/bin/bash -l\n";
     print CJ "#SBATCH -A $project\n";
-    print CJ "#SBATCH --qos=interact\n";
     print CJ "#SBATCH -p core -n 1\n";
     print CJ "#SBATCH -t 10:00:00\n";
     print CJ "#SBATCH -J cronJob\n";
@@ -109,7 +108,7 @@ sub write_tmp_aftervm1{
   
   open my $fh,">",$file or LOGDIE "Cannot write the file $file\n";
   foreach my $elm (@list){
-    my($sid,$seq,$start,$stop,$chr,$gc,$tm,$dg) = unpack("Z*Z*iiZ*fff");
+    my($sid,$seq,$start,$stop,$chr,$gc,$tm,$dg) = unpack("Z*Z*iiZ*fff", $elm);
     print $fh "$sid\t$seq\t$start\t$stop\t$chr\t$gc\t$tm\t$dg\t2\n";                       # '2' specifies that only the first vmatch was executed, the second was not requested
   }
   close($fh);
@@ -272,7 +271,6 @@ sub createSubmissionScript_ctrl2ndVmRun{
   open OS,">",$sh_name or LOGDIE "\tCannot write the shell script which organises the second vmatch run\n";
     print OS "#!/bin/bash -l\n";
     print OS "#SBATCH -A $project\n";
-    print OS "#SBATCH --qos=interact\n";
     print OS "#SBATCH -p core\n";
     print OS "#SBATCH -n 5\n";
     print OS "#SBATCH -t 11:59:00\n";
@@ -301,7 +299,6 @@ sub createSubmissionScript_ctrlLastStep{
   open OS,">",$sh_name or LOGDIE "\tCannot write the shell script which organises the last step after running only one vmatch run\n";
     print OS "#!/bin/bash -l\n";
     print OS "#SBATCH -A $project\n";
-    print OS "#SBATCH --qos=interact\n";
     print OS "#SBATCH -p core\n";
     print OS "#SBATCH -n 5\n";
     print OS "#SBATCH -t 11:59:00\n";
@@ -510,28 +507,44 @@ sub submit_job{
 sub filter_overlapping_pos{
   my @list             = @{$_[0]};
   my ($dist,$pid,$log) = ($_[1],$_[2],$_[3]);
-  my $count = 0;
-  my @uniq  = ();
+  my @final_list       = ();
   Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
+
+  INFO "\tCheck for pid $pid if the coordinates of the ".scalar(@list)." oligonucleotides overlap\n";
+  while(scalar(@list) != 0){#list is not empty
+    my @picked_list = find_unique_pos(\@list,$dist,$log);
+    push(@final_list, @picked_list);
+    @list           = remove_overlapping_oligos(\@list, \@picked_list, $dist);
+  }
+  INFO "\tPID:$pid -> ".scalar(@final_list)." oligonucleotides without overlapping coordinates.\n";
+
+  return @final_list;
+}
+
+
+sub find_unique_pos{
+  my @list = @{$_[0]};
+  my $dist = $_[1];
+  my @uniq = ();
   
   @list = sort { my ($a_id,$a_seq,$a_start,$a_stop,$a_chr,$a_gc,$a_tm,$a_dg) = unpack("Z*Z*iiZ*fff", $a);
                  my ($b_id,$b_seq,$b_start,$b_stop,$b_chr,$b_gc,$b_tm,$b_dg) = unpack("Z*Z*iiZ*fff", $b);
                  $a_chr cmp $b_chr || $a_start <=> $b_start; } @list;
   
-  INFO "\tCheck for pid $pid if the coordinates of the ".scalar(@list)." oligonucleotides overlap\n";
-  my ($cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg) = unpack("Z*Z*iiZ*fff",$list[0]);                                 # initialise values
-  
+  # initialise values
+  my ($cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg) = unpack("Z*Z*iiZ*fff",$list[0]);
+      
   for(my $i = 1; $i < scalar(@list); $i++){
     my ($c_id,$c_seq,$c_start,$c_stop,$c_chr,$c_gc,$c_tm,$c_dg) = unpack("Z*Z*iiZ*fff",$list[$i]);    
 
     if($i == (scalar(@list) - 1)){                                                                                                     # current element is the LAST ELEMENT in the loop: no further comparisons possible
-      if($cmp_chr eq $c_chr){                                                                                                          # SAME CHROMOSOME
+      if($cmp_chr eq $c_chr){
         if((($c_start - $cmp_stop) - 1) >= $dist){                                                                                     # distance greater than $dist: keep both
           my $str_cmp = pack("Z*Z*iiZ*fff",$cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg);
           my $str_c   = pack("Z*Z*iiZ*fff",$c_id,$c_seq,$c_start,$c_stop,$c_chr,$c_gc,$c_tm,$c_dg);
           push(@uniq,$str_cmp);
           push(@uniq,$str_c);
-        }else{                                                                                                                         # overapping coordinates
+        }else{                                                                                                                         # overlapping coordinates
           if($cmp_gc >= $c_gc){                                                                                                        # gc of the compared value is better than that of the current value: keep compared value
             my $str_cmp = pack("Z*Z*iiZ*fff",$cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg);
             push(@uniq,$str_cmp);
@@ -561,14 +574,57 @@ sub filter_overlapping_pos{
         }
       }else{                                                                                                                           # DIFFERENT CHROMOSOMES
         my $str_cmp = pack("Z*Z*iiZ*fff",$cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg);
-        push(@uniq,$str_cmp);                                                                                                          # save the value of the compared object: it is the last on that chromosome
+        push(@uniq,$str_cmp);                                                                                                                        # save the value of the compared object: it is the last on that chromosome
         ($cmp_id,$cmp_seq,$cmp_start,$cmp_stop,$cmp_chr,$cmp_gc,$cmp_tm,$cmp_dg) = ($c_id,$c_seq,$c_start,$c_stop,$c_chr,$c_gc,$c_tm,$c_dg);         # set values of the current object as values of the compared object
       }
     }
-  }  
-  INFO "\tPID:$pid -> ".scalar(@uniq)." oligonucleotides without overlapping coordinates.\n";
-
+  }
+  
+  # if the list contains only one element (the one used to initialise the values), keep it
+  if(scalar(@list) == 1){
+    push(@uniq,$list[0]);
+  }
+  
   return @uniq;
+}
+
+
+sub remove_overlapping_oligos{
+  my @all_list    = @{$_[0]};
+  my @tmp_list    = @{$_[1]};
+  my $dist        = $_[2];
+  my @non_overlap = ();
+  
+  # sort the lists
+  @all_list = sort { my ($a_id,$a_seq,$a_start,$a_stop,$a_chr,$a_gc,$a_tm,$a_dg) = unpack("Z*Z*iiZ*fff", $a);
+                     my ($b_id,$b_seq,$b_start,$b_stop,$b_chr,$b_gc,$b_tm,$b_dg) = unpack("Z*Z*iiZ*fff", $b);
+                     $a_chr cmp $b_chr || $a_start <=> $b_start;
+                   } @all_list;
+
+  @tmp_list = sort { my ($a_id,$a_seq,$a_start,$a_stop,$a_chr,$a_gc,$a_tm,$a_dg) = unpack("Z*Z*iiZ*fff", $a);
+                     my ($b_id,$b_seq,$b_start,$b_stop,$b_chr,$b_gc,$b_tm,$b_dg) = unpack("Z*Z*iiZ*fff", $b);
+                     $a_chr cmp $b_chr || $a_start <=> $b_start;
+                   } @tmp_list;
+
+  foreach my $elm (@all_list){
+    my $overlapping = "false";
+    my ($id, $seq, $start, $stop, $chr, $gc, $tm, $dg) = unpack("Z*Z*iiZ*fff", $elm);
+    
+    foreach my $telm (@tmp_list){
+      my ($tid, $tseq, $tstart, $tstop, $tchr, $tgc, $ttm, $tdg) = unpack("Z*Z*iiZ*fff", $telm);
+
+      if(($chr eq $tchr) and ($tstart <= ($stop + $dist))){
+        $overlapping = "true";
+        last;
+      }
+    }
+
+    if($overlapping eq "false"){
+      push(@non_overlap,$elm);
+    }
+  }
+  
+  return @non_overlap;
 }
 
 

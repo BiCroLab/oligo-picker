@@ -5,8 +5,9 @@ use IPC::System::Simple qw(capturex);
 use File::Basename;
 
 my ($fa_dir, $pid, $arguments, $mail, $script, $tmpdir, $idx, $workdir, $log, $ref_count, $outdir, $logdir, $jpt, $preScript, $snictmp) = @ARGV;
-  
 require("$script/FileHandling.pm");
+require("$script/DbHandling.pm");
+  
 Log::Log4perl->easy_init({level => $INFO, file => ">> $log"});
 
 my @arg                             = split(/::/,$arguments);

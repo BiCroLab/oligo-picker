@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 
 
+## [0.6] August 2018
+### Changed
+- SLURM-related improvements.
+
+
+
 ## [0.5] July 2017
 ### Changed
 - Improvements related to secondary VMATCH run.
@@ -47,4 +53,4 @@ First release.
 [0.3] https://github.com/ggirelli/oligo-picker/releases/tag/v0.3
 [0.4] https://github.com/ggirelli/oligo-picker/releases/tag/v0.4
 [0.5] https://github.com/ggirelli/oligo-picker/releases/tag/v0.5
-
+[0.6] https://github.com/ggirelli/oligo-picker/releases/tag/v0.6
